@@ -19,6 +19,7 @@ export interface User {
   username: string; // email or unique handle
   name: string;
   passwordHash: string; // secure-looking representation for full-stack validation
+  role: 'admin' | 'user'; // admin: full access | user: read-only, cannot create bill or access cashier
   createdAt: string;
 }
 

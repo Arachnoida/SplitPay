@@ -1,10 +1,10 @@
 import React, { useState } from "react";
 import {
-  Key, UserPlus, LogIn, Sparkles, ShieldCheck, User, ArrowLeft, Mail
+  Key, UserPlus, LogIn, Sparkles, ShieldCheck, User, ArrowLeft, Mail, Crown
 } from "lucide-react";
 
 interface AuthScreenProps {
-  onAuthSuccess: (user: { id: string; username: string; name: string }) => void;
+  onAuthSuccess: (user: { id: string; username: string; name: string; role: 'admin' | 'user' }) => void;
   onBack: () => void;
 }
 
@@ -13,6 +13,7 @@ export default function AuthScreen({ onAuthSuccess, onBack }: AuthScreenProps) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [role, setRole] = useState<'admin' | 'user'>("user");
 
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -39,7 +40,7 @@ export default function AuthScreen({ onAuthSuccess, onBack }: AuthScreenProps) {
       const endpoint = isLogin ? "/api/auth/login" : "/api/auth/register";
       const payload = isLogin
         ? { username: username.trim(), password: password.trim() }
-        : { name: name.trim(), username: username.trim(), password: password.trim() };
+        : { name: name.trim(), username: username.trim(), password: password.trim(), role };
 
       const response = await fetch(endpoint, {
         method: "POST",
@@ -58,12 +59,12 @@ export default function AuthScreen({ onAuthSuccess, onBack }: AuthScreenProps) {
       if (isLogin) {
         setSuccess("Login berhasil! Mengalihkan...");
         setTimeout(() => {
-          onAuthSuccess(data);
+          onAuthSuccess({ ...data, role: data.role ?? 'user' });
         }, 1200);
       } else {
         setSuccess("Pendaftaran sukses! Silakan login untuk masuk.");
-        setIsLogin(true); // switch to login mode automatically
-        setPassword(""); // clean password
+        setIsLogin(true);
+        setPassword("");
       }
     } catch (err: any) {
       setError(err.message || "Gagal menghubungkan ke server.");
@@ -97,7 +98,7 @@ export default function AuthScreen({ onAuthSuccess, onBack }: AuthScreenProps) {
         </p>
       </div>
 
-      {/* Tabs selectors with high focus states */}
+      {/* Tabs selectors */}
       <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/60 font-sans">
         <button
           type="button"
@@ -107,8 +108,8 @@ export default function AuthScreen({ onAuthSuccess, onBack }: AuthScreenProps) {
             setSuccess("");
           }}
           className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${isLogin
-              ? "bg-white text-emerald-700 shadow-xs"
-              : "text-slate-500 hover:text-slate-800"
+            ? "bg-white text-emerald-700 shadow-xs"
+            : "text-slate-500 hover:text-slate-800"
             }`}
         >
           <LogIn className="w-3.5 h-3.5" />
@@ -122,8 +123,8 @@ export default function AuthScreen({ onAuthSuccess, onBack }: AuthScreenProps) {
             setSuccess("");
           }}
           className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1.5 ${!isLogin
-              ? "bg-white text-emerald-700 shadow-xs"
-              : "text-slate-500 hover:text-slate-800"
+            ? "bg-white text-emerald-700 shadow-xs"
+            : "text-slate-500 hover:text-slate-800"
             }`}
         >
           <UserPlus className="w-3.5 h-3.5" />
@@ -159,11 +160,7 @@ export default function AuthScreen({ onAuthSuccess, onBack }: AuthScreenProps) {
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                  }
-                }}
+                onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
                 placeholder="Contoh: Rian Budiarta"
                 required
                 className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 focus:bg-white focus:ring-1 focus:ring-emerald-500 rounded-xl text-xs text-slate-800 focus:outline-hidden font-medium"
@@ -181,11 +178,7 @@ export default function AuthScreen({ onAuthSuccess, onBack }: AuthScreenProps) {
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                }
-              }}
+              onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
               placeholder="Contoh: rianbudi atau rian@mail.com"
               required
               autoCapitalize="none"
@@ -203,17 +196,46 @@ export default function AuthScreen({ onAuthSuccess, onBack }: AuthScreenProps) {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                }
-              }}
+              onKeyDown={(e) => { if (e.key === "Enter") e.preventDefault(); }}
               placeholder="Minimal 4 karakter"
               required
               className="w-full pl-9 pr-3 py-2.5 bg-slate-50 border border-slate-200 focus:bg-white focus:ring-1 focus:ring-emerald-500 rounded-xl text-xs text-slate-800 focus:outline-hidden font-medium"
             />
           </div>
         </div>
+
+        {/* Role selector (Register only) */}
+        {!isLogin && (
+          <div className="space-y-1.5 text-left font-sans">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Tipe Akun</label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setRole("user")}
+                className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${role === "user"
+                    ? "bg-emerald-50 border-emerald-400 text-emerald-700 shadow-sm"
+                    : "bg-slate-50 border-slate-200 text-slate-500 hover:border-slate-300"
+                  }`}
+              >
+                <User className="w-4 h-4" />
+                <span>User Biasa</span>
+                <span className="text-[9px] font-normal text-slate-400 leading-tight text-center">Lihat dashboard &amp; riwayat</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRole("admin")}
+                className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border text-xs font-bold transition-all cursor-pointer ${role === "admin"
+                    ? "bg-amber-50 border-amber-400 text-amber-700 shadow-sm"
+                    : "bg-slate-50 border-slate-200 text-slate-500 hover:border-slate-300"
+                  }`}
+              >
+                <Crown className="w-4 h-4" />
+                <span>Admin</span>
+                <span className="text-[9px] font-normal text-slate-400 leading-tight text-center">Akses penuh + buat patungan</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Action Button */}
         <button

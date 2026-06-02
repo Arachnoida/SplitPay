@@ -302,6 +302,30 @@
   ],
   "notifications": [
     {
+      "id": "notif-usr-1780365067108",
+      "billId": "",
+      "billTitle": "Pendaftaran Pengguna",
+      "message": "👤 Pengguna baru 'dawd' (@d@gmail.com) telah bergabung ke SplitBay!",
+      "type": "INFO",
+      "timestamp": "2026-06-02T01:51:07.108Z"
+    },
+    {
+      "id": "notif-usr-1780364807159",
+      "billId": "",
+      "billTitle": "Pendaftaran Pengguna",
+      "message": "👤 Pengguna baru 'dadadwa' (@ikdjaj@gmail.com) telah bergabung ke SplitBay!",
+      "type": "INFO",
+      "timestamp": "2026-06-02T01:46:47.159Z"
+    },
+    {
+      "id": "notif-usr-1780364486558",
+      "billId": "",
+      "billTitle": "Pendaftaran Pengguna",
+      "message": "👤 Pengguna baru 'Kin Kareem' (@kin@gmail.com) telah bergabung ke SplitBay!",
+      "type": "INFO",
+      "timestamp": "2026-06-02T01:41:26.558Z"
+    },
+    {
       "id": "notif-1779777661548",
       "billId": "bill-1779777661547",
       "billTitle": "Ya gitu",
@@ -476,5 +500,27 @@
       "paymentMethod": "QRIS BCA"
     }
   ],
-  "users": []
+  "users": [
+    {
+      "id": "usr-178036448655885",
+      "username": "kin@gmail.com",
+      "name": "Kin Kareem",
+      "passwordHash": "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
+      "createdAt": "2026-06-02T01:41:26.558Z"
+    },
+    {
+      "id": "usr-178036480715945",
+      "username": "ikdjaj@gmail.com",
+      "name": "dadadwa",
+      "passwordHash": "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
+      "createdAt": "2026-06-02T01:46:47.159Z"
+    },
+    {
+      "id": "usr-178036506710850",
+      "username": "d@gmail.com",
+      "name": "dawd",
+      "passwordHash": "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
+      "createdAt": "2026-06-02T01:51:07.108Z"
+    }
+  ]
 }

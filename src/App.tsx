@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
-import { 
-  Plus, Users, Receipt, History, AlertCircle, RefreshCw, Sparkles, 
-  Search, ShieldCheck, HelpCircle, CheckCircle, Smartphone, 
+import {
+  Plus, Users, Receipt, History, AlertCircle, RefreshCw, Sparkles,
+  Search, ShieldCheck, HelpCircle, CheckCircle, Smartphone,
   Trash, ArrowRight, Bell, Library, Database, Coffee
 } from "lucide-react";
 
@@ -20,7 +20,7 @@ export default function App() {
   const [currentBill, setCurrentBill] = useState<Bill | null>(null);
 
   // Authenticated user state
-  const [currentUser, setCurrentUser] = useState<{ id: string; username: string; name: string } | null>(() => {
+  const [currentUser, setCurrentUser] = useState<{ id: string; username: string; name: string; role: 'admin' | 'user' } | null>(() => {
     const saved = localStorage.getItem("splitbay_user");
     try {
       return saved ? JSON.parse(saved) : null;
@@ -34,7 +34,7 @@ export default function App() {
     setCurrentUser(null);
     setActiveTab("dashboard");
   };
-  
+
   // Dashboard joins search
   const [joinCodeInput, setJoinCodeInput] = useState("");
   const [searchError, setSearchError] = useState("");
@@ -137,12 +137,12 @@ export default function App() {
   const totalVerifiedFunds = histories.filter(h => h.status === "SUCCESS").reduce((sum, h) => sum + h.amount, 0);
 
   // Latest notification text for ticker bar
-  const latestPayNotification = notifications.find(n => n.type === "PAYMENT_RECEIVED" || n.type === "BILL_COMPLETED")?.message 
+  const latestPayNotification = notifications.find(n => n.type === "PAYMENT_RECEIVED" || n.type === "BILL_COMPLETED")?.message
     || "SplitBay siap memproses patungan online secara real-time!";
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-800">
-      
+
       {/* Top Banner Ticker representing real-time webhook verifications */}
       <div className="bg-emerald-950 text-emerald-300 px-4 py-2 text-center text-xs font-mono select-none flex items-center justify-center gap-2 overflow-hidden border-b border-emerald-900 shadow-sm leading-normal">
         <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
@@ -150,8 +150,8 @@ export default function App() {
         <span className="truncate max-w-lg md:max-w-3xl text-emerald-50">
           {latestPayNotification}
         </span>
-        <button 
-          onClick={syncPlatformData} 
+        <button
+          onClick={syncPlatformData}
           className="ml-2 hover:text-white shrink-0 hidden md:inline-flex items-center gap-1 opacity-80 hover:opacity-100 transition-colors"
           title="Sinkronisasi Data"
         >
@@ -162,9 +162,9 @@ export default function App() {
       {/* Main Structural Header */}
       <header className="bg-white border-b border-slate-200 shadow-sm sticky top-0 z-10 transition-all">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex justify-between items-center">
-          
+
           {/* Branded Logo aligned with Emerald Greens for financial unity */}
-          <div 
+          <div
             onClick={() => setActiveTab("dashboard")}
             className="flex items-center gap-3 cursor-pointer group"
           >
@@ -184,51 +184,67 @@ export default function App() {
           <nav className="hidden md:flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl border border-slate-200/60">
             <button
               onClick={() => setActiveTab("dashboard")}
-              className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                activeTab === "dashboard"
-                  ? "bg-emerald-600 text-white shadow-sm"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
-              }`}
+              className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${activeTab === "dashboard"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+                }`}
             >
               Dashboard Utama
             </button>
 
-            <button
-              onClick={() => setActiveTab("cashier")}
-              className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                activeTab === "cashier"
+            {/* Admin-only: Portal Kasir */}
+            {currentUser?.role === 'admin' ? (
+              <button
+                onClick={() => setActiveTab("cashier")}
+                className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${activeTab === "cashier"
                   ? "bg-emerald-600 text-white shadow-sm"
                   : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
-              }`}
-            >
-              Portal Kasir
-            </button>
+                  }`}
+              >
+                Portal Kasir
+              </button>
+            ) : (
+              <span
+                title="Hanya Admin yang dapat mengakses Portal Kasir"
+                className="px-3.5 py-1.5 text-xs font-bold rounded-lg text-slate-300 cursor-not-allowed select-none flex items-center gap-1"
+              >
+                🔒 Portal Kasir
+              </span>
+            )}
 
-            <button
-              onClick={() => {
-                setActiveTab("patungan");
-              }}
-              className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer relative ${
-                activeTab === "patungan"
+            {/* Admin-only: Ruang Patungan */}
+            {currentUser?.role === 'admin' ? (
+              <button
+                onClick={() => {
+                  setActiveTab("patungan");
+                }}
+                className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer relative ${activeTab === "patungan"
                   ? "bg-emerald-600 text-white shadow-sm"
                   : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
-              }`}
-            >
-              Ruang Patungan Aktif
-              {currentBill && (
-                <span className="absolute -top-1.5 -right-1 bg-amber-500 text-white text-[8px] font-black rounded-full w-4.5 h-4.5 flex items-center justify-center shadow-xs border border-white font-mono uppercase">
-                  {currentBill.code.substring(4)}
-                </span>
-              )}
-            </button>
+                  }`}
+              >
+                Ruang Patungan Aktif
+                {currentBill && (
+                  <span className="absolute -top-1.5 -right-1 bg-amber-500 text-white text-[8px] font-black rounded-full w-4.5 h-4.5 flex items-center justify-center shadow-xs border border-white font-mono uppercase">
+                    {currentBill.code.substring(4)}
+                  </span>
+                )}
+              </button>
+            ) : (
+              <span
+                title="Hanya Admin yang dapat mengakses Ruang Patungan"
+                className="px-3.5 py-1.5 text-xs font-bold rounded-lg text-slate-300 cursor-not-allowed select-none flex items-center gap-1"
+              >
+                🔒 Ruang Patungan
+              </span>
+            )}
 
             <button
               onClick={() => setActiveTab("history")}
-              className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${
-                activeTab === "history"
-                  ? "bg-emerald-600 text-white shadow-sm"
-                  : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
-              }`}
+              className={`px-3.5 py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer ${activeTab === "history"
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "text-slate-600 hover:text-slate-900 hover:bg-white/50"
+                }`}
             >
               Cek Transparansi (Riwayat)
             </button>
@@ -247,7 +263,14 @@ export default function App() {
             {currentUser ? (
               <div className="flex items-center gap-2">
                 <div className="hidden lg:block text-right select-none">
-                  <p className="text-xs font-bold text-slate-800 leading-none">{currentUser.name}</p>
+                  <div className="flex items-center gap-1.5 justify-end">
+                    <p className="text-xs font-bold text-slate-800 leading-none">{currentUser.name}</p>
+                    {currentUser.role === 'admin' ? (
+                      <span className="text-[8px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-black tracking-wider uppercase">ADMIN</span>
+                    ) : (
+                      <span className="text-[8px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-black tracking-wider uppercase">USER</span>
+                    )}
+                  </div>
                   <span className="text-[10px] text-slate-400 font-medium">@{currentUser.username}</span>
                 </div>
                 <button
@@ -266,47 +289,66 @@ export default function App() {
               </button>
             )}
 
-            <button
-              onClick={() => setActiveTab("cashier")}
-              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-md shadow-emerald-600/10 cursor-pointer hidden sm:flex items-center gap-1.5 transition-all"
-            >
-              <Plus className="w-4 h-4" />
-              Kasir Baru
-            </button>
+            {currentUser?.role === 'admin' && (
+              <button
+                onClick={() => setActiveTab("cashier")}
+                className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl shadow-md shadow-emerald-600/10 cursor-pointer hidden sm:flex items-center gap-1.5 transition-all"
+              >
+                <Plus className="w-4 h-4" />
+                Kasir Baru
+              </button>
+            )}
           </div>
         </div>
       </header>
 
       {/* Mobile Bar menu (Bottom layout) */}
       <div className="md:hidden bg-white border-t border-slate-200 fixed bottom-0 left-0 right-0 z-30 shadow-lg px-4 py-2.5 flex justify-around">
-        <button 
-          onClick={() => setActiveTab("dashboard")} 
+        <button
+          onClick={() => setActiveTab("dashboard")}
           className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'dashboard' ? 'text-emerald-600' : 'text-slate-500'}`}
         >
           <Library className="w-4.5 h-4.5" />
           <span>Utama</span>
         </button>
-        <button 
-          onClick={() => setActiveTab("cashier")} 
-          className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'cashier' ? 'text-emerald-600' : 'text-slate-500'}`}
-        >
-          <Plus className="w-4.5 h-4.5" />
-          <span>Kasir</span>
-        </button>
-        <button 
-          onClick={() => setActiveTab("patungan")} 
-          className={`flex flex-col items-center gap-1 text-[10px] font-bold relative ${activeTab === 'patungan' ? 'text-emerald-600' : 'text-slate-500'}`}
-        >
-          {currentBill && (
-            <span className="absolute -top-1 -right-1.5 bg-amber-500 text-white text-[8px] font-black w-4.5 h-4.5 rounded-full flex items-center justify-center font-mono">
-              ★
-            </span>
-          )}
-          <Users className="w-4.5 h-4.5" />
-          <span>Patungan</span>
-        </button>
-        <button 
-          onClick={() => setActiveTab("history")} 
+
+        {currentUser?.role === 'admin' ? (
+          <button
+            onClick={() => setActiveTab("cashier")}
+            className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'cashier' ? 'text-emerald-600' : 'text-slate-500'}`}
+          >
+            <Plus className="w-4.5 h-4.5" />
+            <span>Kasir</span>
+          </button>
+        ) : (
+          <span className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-300 cursor-not-allowed select-none">
+            <Plus className="w-4.5 h-4.5" />
+            <span>🔒 Kasir</span>
+          </span>
+        )}
+
+        {currentUser?.role === 'admin' ? (
+          <button
+            onClick={() => setActiveTab("patungan")}
+            className={`flex flex-col items-center gap-1 text-[10px] font-bold relative ${activeTab === 'patungan' ? 'text-emerald-600' : 'text-slate-500'}`}
+          >
+            {currentBill && (
+              <span className="absolute -top-1 -right-1.5 bg-amber-500 text-white text-[8px] font-black w-4.5 h-4.5 rounded-full flex items-center justify-center font-mono">
+                ★
+              </span>
+            )}
+            <Users className="w-4.5 h-4.5" />
+            <span>Patungan</span>
+          </button>
+        ) : (
+          <span className="flex flex-col items-center gap-1 text-[10px] font-bold text-slate-300 cursor-not-allowed select-none">
+            <Users className="w-4.5 h-4.5" />
+            <span>🔒 Patungan</span>
+          </span>
+        )}
+
+        <button
+          onClick={() => setActiveTab("history")}
           className={`flex flex-col items-center gap-1 text-[10px] font-bold ${activeTab === 'history' ? 'text-emerald-600' : 'text-slate-500'}`}
         >
           <History className="w-4.5 h-4.5" />
@@ -316,33 +358,37 @@ export default function App() {
 
       {/* Main Container Content */}
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8 pb-24 md:pb-12">
-        
+
         {activeTab === "dashboard" && (
           <div className="space-y-8 animate-fade-in" id="dashboard-tab-view">
-            
+
             {/* Visual Hero Card explaining full-stack split payment */}
             <div className="bg-radial from-emerald-800 to-emerald-950 text-white rounded-3xl p-6 md:p-8 border border-emerald-900 shadow-xl relative overflow-hidden">
               <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-linear-to-l from-emerald-500/10 to-transparent pointer-events-none" />
-              
+
               <div className="max-w-2xl space-y-4">
                 <span className="px-3 py-1 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] tracking-widest font-bold uppercase rounded-full inline-block">
-                  {currentUser ? "Sesi Anda Telah Terintegrasi" : "Sistem Informasi Pemisah Invoice & Webhook Integrasi"}
+                  {currentUser ? (currentUser.role === 'admin' ? "👑 Sesi Admin Terintegrasi" : "✅ Sesi User Terintegrasi") : "Sistem Informasi Pemisah Invoice & Webhook Integrasi"}
                 </span>
                 <h1 className="text-3xl md:text-4xl font-black tracking-tight leading-tight">
                   {currentUser ? `Halo, ${currentUser.name}! 👋` : "Manajemen Patungan Tanpa Ribet"}
                 </h1>
                 <p className="text-sm text-emerald-100/90 leading-relaxed max-w-xl">
-                  {currentUser 
-                    ? `Anda berhasil masuk sebagai @${currentUser.username}. Silakan buat tagihan bersama baru di Portal Kasir atau periksa sesi patungan aktif Anda di daftar bawah!` 
+                  {currentUser
+                    ? currentUser.role === 'admin'
+                      ? `Anda masuk sebagai Admin (@${currentUser.username}). Akses penuh tersedia: buat tagihan baru, kelola patungan, dan pantau riwayat transaksi!`
+                      : `Anda masuk sebagai User (@${currentUser.username}). Anda dapat melihat dashboard dan riwayat transaksi. Untuk membuat patungan, diperlukan akun Admin.`
                     : "Kasir cukup membuat nominal tagihan tunggal. Pembeli beserta timnya bergabung bersama menggunakan kode unik, menentukan kontribusi masing-masing secara setara atau bertahap, dan melunasi invoice parsial otomatis via sandbox webhook payment gateway!"}
                 </p>
                 <div className="flex flex-wrap gap-3 pt-2">
-                  <button
-                    onClick={() => setActiveTab("cashier")}
-                    className="px-5 py-2.5 bg-emerald-400 hover:bg-emerald-300 text-emerald-950 font-extrabold text-xs rounded-xl shadow-lg shadow-emerald-950/45 transition-all cursor-pointer"
-                  >
-                    Buka Kasir &amp; Buat Tagihan Baru
-                  </button>
+                  {currentUser?.role === 'admin' && (
+                    <button
+                      onClick={() => setActiveTab("cashier")}
+                      className="px-5 py-2.5 bg-emerald-400 hover:bg-emerald-300 text-emerald-950 font-extrabold text-xs rounded-xl shadow-lg shadow-emerald-950/45 transition-all cursor-pointer"
+                    >
+                      Buka Kasir &amp; Buat Tagihan Baru
+                    </button>
+                  )}
                   {!currentUser ? (
                     <button
                       onClick={() => setActiveTab("auth")}
@@ -350,7 +396,7 @@ export default function App() {
                     >
                       Masuk / Daftar Akun
                     </button>
-                  ) : (
+                  ) : currentUser.role === 'admin' ? (
                     <button
                       onClick={() => {
                         const myBills = bills.filter(b => b.creatorId === currentUser.id || b.contributors.some(c => c.name.toLowerCase() === currentUser.name.toLowerCase() || c.name.toLowerCase() === currentUser.username.toLowerCase()));
@@ -367,6 +413,13 @@ export default function App() {
                       className="px-5 py-2.5 bg-white/10 hover:bg-white/15 text-white font-bold text-xs rounded-xl border border-white/20 transition-all cursor-pointer"
                     >
                       Buka Patungan Terakhir Anda
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => setActiveTab("history")}
+                      className="px-5 py-2.5 bg-white/10 hover:bg-white/15 text-white font-bold text-xs rounded-xl border border-white/20 transition-all cursor-pointer"
+                    >
+                      Lihat Riwayat Transaksi
                     </button>
                   )}
                 </div>
@@ -410,10 +463,10 @@ export default function App() {
 
             {/* Main Interactive Grid */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              
+
               {/* Left col: Join via code and registered sessions list */}
               <div className="lg:col-span-2 space-y-6">
-                
+
                 {/* Join code entry panel */}
                 <div className="bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-4">
                   <div>
@@ -467,13 +520,13 @@ export default function App() {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       {bills.filter(b => b.creatorId === currentUser.id || b.contributors.some(c => c.name.toLowerCase() === currentUser.name.toLowerCase() || c.name.toLowerCase() === currentUser.username.toLowerCase())).length === 0 ? (
                         <div className="col-span-2 text-center py-6 text-slate-400 text-xs">
-                          Anda belum memiliki atau bergabung di sesi patungan manapun. 
+                          Anda belum memiliki atau bergabung di sesi patungan manapun.
                           Mari buat tagihan di Portal Kasir atau masukkan kode teman Anda di atas!
                         </div>
                       ) : (
                         bills.filter(b => b.creatorId === currentUser.id || b.contributors.some(c => c.name.toLowerCase() === currentUser.name.toLowerCase() || c.name.toLowerCase() === currentUser.username.toLowerCase())).map((b) => (
-                          <div 
-                            key={`my-${b.id}`} 
+                          <div
+                            key={`my-${b.id}`}
                             onClick={() => {
                               setCurrentBill(b);
                               setActiveTab("patungan");
@@ -484,7 +537,7 @@ export default function App() {
                               <span className="text-[10px] font-mono font-bold text-emerald-800 bg-emerald-100/60 border border-emerald-200 px-2 py-0.5 rounded">
                                 {b.code}
                               </span>
-                              
+
                               {b.status === "COMPLETED" ? (
                                 <span className="text-[8px] tracking-wide font-black uppercase text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded-sm">
                                   Lunas (Webhook)
@@ -550,8 +603,8 @@ export default function App() {
                       </div>
                     ) : (
                       bills.map((b) => (
-                        <div 
-                          key={b.id} 
+                        <div
+                          key={b.id}
                           onClick={() => {
                             setCurrentBill(b);
                             setActiveTab("patungan");
@@ -562,7 +615,7 @@ export default function App() {
                             <span className="text-[10px] font-mono font-bold text-emerald-800 bg-emerald-50 border border-emerald-100 px-2 py-0.5 rounded">
                               {b.code}
                             </span>
-                            
+
                             {b.status === "COMPLETED" ? (
                               <span className="text-[8px] tracking-wide font-black uppercase text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded-sm">
                                 Lunas (Webhook)
@@ -597,9 +650,9 @@ export default function App() {
 
               {/* Right column: System Live Notifications pane */}
               <div className="space-y-6">
-                <NotificationCenter 
-                  notifications={notifications} 
-                  onRefresh={syncPlatformData} 
+                <NotificationCenter
+                  notifications={notifications}
+                  onRefresh={syncPlatformData}
                 />
               </div>
 
@@ -607,28 +660,46 @@ export default function App() {
           </div>
         )}
 
-        {/* Cashier Tab */}
+        {/* Cashier Tab - Admin only */}
         {activeTab === "cashier" && (
-          <CashierPortal 
-            onBillCreated={handleCreateNewBillInPortal} 
-            setActiveTab={setActiveTab}
-            currentUser={currentUser}
-          />
+          currentUser?.role === 'admin' ? (
+            <CashierPortal
+              onBillCreated={handleCreateNewBillInPortal}
+              setActiveTab={setActiveTab}
+              currentUser={currentUser}
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center py-24 text-center space-y-4">
+              <div className="w-16 h-16 bg-red-50 rounded-2xl flex items-center justify-center text-3xl">🔒</div>
+              <h3 className="text-lg font-black text-slate-800">Akses Ditolak</h3>
+              <p className="text-sm text-slate-500 max-w-sm">Portal Kasir hanya dapat diakses oleh <span className="font-bold text-emerald-700">Admin</span>. Silakan login dengan akun Admin atau hubungi administrator sistem.</p>
+              <button onClick={() => setActiveTab("dashboard")} className="px-5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl cursor-pointer hover:bg-emerald-700 transition-all">Kembali ke Dashboard</button>
+            </div>
+          )
         )}
 
-        {/* Active Split Workspace Tab */}
+        {/* Active Split Workspace Tab - Admin only */}
         {activeTab === "patungan" && (
-          <CustomerWorkspace
-            currentBill={currentBill}
-            onSelectBill={setCurrentBill}
-            onRefreshNotifications={syncPlatformData}
-            currentUser={currentUser}
-          />
+          currentUser?.role === 'admin' ? (
+            <CustomerWorkspace
+              currentBill={currentBill}
+              onSelectBill={setCurrentBill}
+              onRefreshNotifications={syncPlatformData}
+              currentUser={currentUser}
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center py-24 text-center space-y-4">
+              <div className="w-16 h-16 bg-red-50 rounded-2xl flex items-center justify-center text-3xl">🔒</div>
+              <h3 className="text-lg font-black text-slate-800">Akses Ditolak</h3>
+              <p className="text-sm text-slate-500 max-w-sm">Ruang Patungan hanya dapat diakses oleh <span className="font-bold text-emerald-700">Admin</span>. Silakan login dengan akun Admin untuk membuat dan mengelola patungan.</p>
+              <button onClick={() => setActiveTab("dashboard")} className="px-5 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl cursor-pointer hover:bg-emerald-700 transition-all">Kembali ke Dashboard</button>
+            </div>
+          )
         )}
 
         {/* Auth Tab */}
         {activeTab === "auth" && (
-          <AuthScreen 
+          <AuthScreen
             onAuthSuccess={(user) => {
               localStorage.setItem("splitbay_user", JSON.stringify(user));
               setCurrentUser(user);
@@ -640,7 +711,7 @@ export default function App() {
 
         {/* Audit Tab */}
         {activeTab === "history" && (
-          <TransparencyHistory 
+          <TransparencyHistory
             histories={histories}
             onRefresh={syncPlatformData}
           />

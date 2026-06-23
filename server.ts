@@ -12,6 +12,14 @@ import { Bill, Contributor, SplitNotification, TransactionHistory } from "./src/
 const PORT = 3000;
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "";
+const MIDTRANS_SERVER_KEY = process.env.MIDTRANS_SERVER_KEY || "";
+const MIDTRANS_CLIENT_KEY = process.env.MIDTRANS_CLIENT_KEY || "";
+const MIDTRANS_IS_PRODUCTION = process.env.MIDTRANS_IS_PRODUCTION === "true";
+const APP_BASE_URL = process.env.APP_BASE_URL || process.env.APP_URL || `http://localhost:${PORT}`;
+
+const MIDTRANS_SNAP_URL = MIDTRANS_IS_PRODUCTION
+  ? "https://app.midtrans.com/snap/v1/transactions"
+  : "https://app.sandbox.midtrans.com/snap/v1/transactions";
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error("❌ SUPABASE_URL dan SUPABASE_SERVICE_KEY wajib diisi di file .env");
@@ -32,20 +40,52 @@ function generateBillCode(): string {
   return `BAY-${num}`;
 }
 
+function getMidtransAuthHeader(): string {
+  return "Basic " + Buffer.from(`${MIDTRANS_SERVER_KEY}:`).toString("base64");
+}
+
+function makeMidtransOrderId(): string {
+  return `SP-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+}
+
+function parseMidtransOrderId(orderId: string): { billId: string; contributorId: string } | null {
+  const parts = orderId.split("__");
+
+  if (parts.length < 4 || parts[0] !== "SPLITPAY") {
+    return null;
+  }
+
+  return {
+    billId: parts[1],
+    contributorId: parts[2],
+  };
+}
+
+function createMidtransSignature(orderId: string, statusCode: string, grossAmount: string): string {
+  return crypto
+    .createHash("sha512")
+    .update(orderId + statusCode + grossAmount + MIDTRANS_SERVER_KEY)
+    .digest("hex");
+}
+
+function isSuccessfulMidtransStatus(transactionStatus: string, fraudStatus?: string): boolean {
+  return (
+    transactionStatus === "settlement" ||
+    (transactionStatus === "capture" && (!fraudStatus || fraudStatus === "accept"))
+  );
+}
+
+function isFailedMidtransStatus(transactionStatus: string): boolean {
+  return ["deny", "cancel", "expire", "failure"].includes(transactionStatus);
+}
+
 // Memetakan row Supabase ke struktur Bill (termasuk items & contributors)
 async function fetchBillWithDetails(billId: string): Promise<Bill | null> {
-  const { data: bill, error } = await supabase
-    .from("bills")
-    .select("*")
-    .eq("id", billId)
-    .single();
+  const { data: bill, error } = await supabase.from("bills").select("*").eq("id", billId).single();
 
   if (error || !bill) return null;
 
-  const { data: items } = await supabase
-    .from("bill_items")
-    .select("*")
-    .eq("bill_id", billId);
+  const { data: items } = await supabase.from("bill_items").select("*").eq("bill_id", billId);
 
   const { data: contributors } = await supabase
     .from("contributors")
@@ -130,7 +170,9 @@ async function start() {
       .single();
 
     if (existing) {
-      return res.status(400).json({ error: "Username sudah terdaftar. Silakan pilih username lain." });
+      return res
+        .status(400)
+        .json({ error: "Username sudah terdaftar. Silakan pilih username lain." });
     }
 
     const newId = "usr-" + Date.now() + Math.floor(Math.random() * 100);
@@ -296,15 +338,19 @@ async function start() {
     if (!bill) return res.status(404).json({ error: "Tagihan tidak ditemukan." });
 
     if (bill.status === "LOCKED" || bill.status === "COMPLETED") {
-      return res.status(400).json({ error: "Tagihan sudah dikonfirmasi/lunas, tidak bisa lagi menambah pembayar." });
+      return res
+        .status(400)
+        .json({ error: "Tagihan sudah dikonfirmasi/lunas, tidak bisa lagi menambah pembayar." });
     }
 
     const cleanName = name.trim();
     const duplicate = bill.contributors.some(
-      (c) => c.name.toLowerCase() === cleanName.toLowerCase()
+      (c) => c.name.toLowerCase() === cleanName.toLowerCase(),
     );
     if (duplicate) {
-      return res.status(400).json({ error: "Nama ini sudah terpakai di patungan ini. Harap pakai nama unik." });
+      return res
+        .status(400)
+        .json({ error: "Nama ini sudah terpakai di patungan ini. Harap pakai nama unik." });
     }
 
     const newContributorId = "cnt-" + Date.now() + Math.floor(Math.random() * 100);
@@ -339,7 +385,9 @@ async function start() {
     if (!bill) return res.status(404).json({ error: "Tagihan tidak ditemukan." });
 
     if (bill.status === "LOCKED" || bill.status === "COMPLETED") {
-      return res.status(400).json({ error: "Tagihan sudah ditutup/selesai, tidak bisa menghapus anggota." });
+      return res
+        .status(400)
+        .json({ error: "Tagihan sudah ditutup/selesai, tidak bisa menghapus anggota." });
     }
 
     const contributor = bill.contributors.find((c) => c.id === contributorId);
@@ -403,7 +451,9 @@ async function start() {
 
     const count = bill.contributors.length;
     if (count === 0) {
-      return res.status(400).json({ error: "Belum ada anggota yang bergabung untuk membagi tagihan." });
+      return res
+        .status(400)
+        .json({ error: "Belum ada anggota yang bergabung untuk membagi tagihan." });
     }
 
     if (type === "equal") {
@@ -454,7 +504,9 @@ async function start() {
     if (!bill) return res.status(404).json({ error: "Tagihan tidak ditemukan." });
 
     if (bill.status !== "SHARING") {
-      return res.status(400).json({ error: `Tagihan sudah berstatus ${bill.status}, tidak bisa dikunci.` });
+      return res
+        .status(400)
+        .json({ error: `Tagihan sudah berstatus ${bill.status}, tidak bisa dikunci.` });
     }
 
     const assignedSum = bill.contributors.reduce((s, c) => s + c.shareAmount, 0);
@@ -483,6 +535,108 @@ async function start() {
 
     const updated = await fetchBillWithDetails(id);
     res.json(updated);
+  });
+
+  // ----------------------------------------------------------
+  //  MIDTRANS: CREATE SNAP TRANSACTION
+  // ----------------------------------------------------------
+  app.post("/api/payments/midtrans/create", async (req, res) => {
+    try {
+      const { billId, contributorId } = req.body;
+
+      if (!MIDTRANS_SERVER_KEY || MIDTRANS_SERVER_KEY.includes("ISI_DARI")) {
+        return res.status(500).json({
+          error: "MIDTRANS_SERVER_KEY belum dikonfigurasi di file .env.",
+        });
+      }
+
+      if (!billId || !contributorId) {
+        return res.status(400).json({ error: "billId dan contributorId wajib dikirim." });
+      }
+
+      const bill = await fetchBillWithDetails(billId);
+      if (!bill) {
+        return res.status(404).json({ error: "Tagihan tidak ditemukan." });
+      }
+
+      if (bill.status !== "LOCKED") {
+        return res.status(400).json({
+          error: "Tagihan harus dikunci terlebih dahulu sebelum dibayar melalui Midtrans.",
+        });
+      }
+
+      const contributor = bill.contributors.find((c) => c.id === contributorId);
+      if (!contributor) {
+        return res.status(404).json({ error: "Anggota patungan tidak ditemukan." });
+      }
+
+      if (contributor.paymentStatus === "PAID") {
+        return res.status(400).json({ error: "Invoice contributor ini sudah lunas." });
+      }
+
+      const grossAmount = Math.round(Number(contributor.shareAmount));
+
+      if (!grossAmount || grossAmount <= 0) {
+        return res.status(400).json({ error: "Nominal pembayaran tidak valid." });
+      }
+
+      const orderId = makeMidtransOrderId();
+
+      const payload = {
+        transaction_details: {
+          order_id: orderId,
+          gross_amount: grossAmount,
+        },
+        customer_details: {
+          first_name: contributor.name,
+        },
+        item_details: [
+          {
+            id: contributor.id,
+            price: grossAmount,
+            quantity: 1,
+            name: `SplitPay - ${bill.title} - ${contributor.name}`.slice(0, 50),
+          },
+        ],
+        callbacks: {
+          finish: `${APP_BASE_URL}?bill=${encodeURIComponent(bill.code)}`,
+        },
+        custom_field1: bill.id,
+        custom_field2: contributor.id,
+        custom_field3: bill.code,
+      };
+
+      const midtransResponse = await fetch(MIDTRANS_SNAP_URL, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: getMidtransAuthHeader(),
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const midtransData: any = await midtransResponse.json().catch(() => ({}));
+
+      if (!midtransResponse.ok) {
+        return res.status(midtransResponse.status).json({
+          error: "Gagal membuat transaksi Midtrans.",
+          detail: midtransData,
+        });
+      }
+
+      return res.json({
+        success: true,
+        orderId,
+        token: midtransData.token,
+        redirectUrl: midtransData.redirect_url,
+      });
+    } catch (error: any) {
+      console.error("Midtrans create transaction error:", error);
+      return res.status(500).json({
+        error: "Terjadi kesalahan saat membuat transaksi Midtrans.",
+      });
+    }
   });
 
   // ----------------------------------------------------------
@@ -524,17 +678,22 @@ async function start() {
     }
 
     if (contributor.paymentStatus === "PAID") {
-      return res.status(200).json({ status: "ALREADY_PAID", message: "Transaksi ini sudah lunas." });
+      return res
+        .status(200)
+        .json({ status: "ALREADY_PAID", message: "Transaksi ini sudah lunas." });
     }
 
     const txId = "TX-HOOK-" + Math.floor(100000 + Math.random() * 900000);
     const paidAt = new Date().toISOString();
 
-    await supabase.from("contributors").update({
-      payment_status: "PAID",
-      paid_at: paidAt,
-      transaction_id: txId,
-    }).eq("id", contributorId);
+    await supabase
+      .from("contributors")
+      .update({
+        payment_status: "PAID",
+        paid_at: paidAt,
+        transaction_id: txId,
+      })
+      .eq("id", contributorId);
 
     await supabase.from("transaction_histories").insert({
       id: "tx-hist-" + Date.now() + Math.floor(Math.random() * 10),
@@ -576,6 +735,193 @@ async function start() {
       billStatus: allPaid ? "COMPLETED" : "LOCKED",
       transactionId: txId,
     });
+  });
+
+  // ----------------------------------------------------------
+  //  MIDTRANS: PAYMENT WEBHOOK
+  // ----------------------------------------------------------
+  app.post("/api/webhook/midtrans", async (req, res) => {
+    try {
+      const notification = req.body;
+
+      const orderId = String(notification.order_id || "");
+      const statusCode = String(notification.status_code || "");
+      const grossAmountRaw = String(notification.gross_amount || "");
+      const receivedSignature = String(notification.signature_key || "");
+      const transactionStatus = String(notification.transaction_status || "");
+      const fraudStatus = notification.fraud_status ? String(notification.fraud_status) : undefined;
+      const paymentType = notification.payment_type
+        ? String(notification.payment_type)
+        : "Midtrans";
+      const transactionId = notification.transaction_id
+        ? String(notification.transaction_id)
+        : orderId;
+
+      if (!orderId || !statusCode || !grossAmountRaw || !transactionStatus) {
+        return res.status(400).json({ error: "Payload webhook Midtrans tidak lengkap." });
+      }
+
+      if (!MIDTRANS_SERVER_KEY || MIDTRANS_SERVER_KEY.includes("ISI_DARI")) {
+        return res.status(500).json({
+          error: "MIDTRANS_SERVER_KEY belum dikonfigurasi di server.",
+        });
+      }
+
+      if (receivedSignature) {
+        const expectedSignature = createMidtransSignature(orderId, statusCode, grossAmountRaw);
+
+        if (receivedSignature !== expectedSignature) {
+          return res.status(403).json({
+            error: "Signature webhook Midtrans tidak valid.",
+          });
+        }
+      }
+
+      const parsedFromOrderId = parseMidtransOrderId(orderId);
+
+      const billId = notification.custom_field1 || parsedFromOrderId?.billId;
+      const contributorId = notification.custom_field2 || parsedFromOrderId?.contributorId;
+
+      if (!billId || !contributorId) {
+        return res.status(400).json({
+          error: "billId atau contributorId tidak ditemukan pada payload Midtrans.",
+        });
+      }
+
+      const bill = await fetchBillWithDetails(String(billId));
+      if (!bill) {
+        return res.status(404).json({ error: "Tagihan tidak ditemukan." });
+      }
+
+      const contributor = bill.contributors.find((c) => c.id === contributorId);
+      if (!contributor) {
+        return res.status(404).json({ error: "Contributor tidak ditemukan." });
+      }
+
+      const receivedAmount = Number(grossAmountRaw);
+      const expectedAmount = Number(contributor.shareAmount);
+
+      if (receivedAmount !== expectedAmount) {
+        await supabase.from("transaction_histories").insert({
+          id: "tx-mid-fail-" + Date.now() + Math.floor(Math.random() * 1000),
+          bill_id: bill.id,
+          bill_title: bill.title,
+          contributor_name: contributor.name,
+          amount: receivedAmount,
+          status: "FAILED",
+          payment_method: `Midtrans ${paymentType}`,
+        });
+
+        return res.status(400).json({
+          error: `Nominal Midtrans tidak sesuai. Diterima Rp ${receivedAmount}, seharusnya Rp ${expectedAmount}.`,
+        });
+      }
+
+      if (contributor.paymentStatus === "PAID") {
+        return res.json({
+          success: true,
+          status: "ALREADY_PAID",
+          message: "Webhook diterima, tetapi contributor sudah lunas sebelumnya.",
+        });
+      }
+
+      if (isFailedMidtransStatus(transactionStatus)) {
+        await supabase
+          .from("contributors")
+          .update({
+            payment_status: "FAILED",
+            transaction_id: transactionId,
+          })
+          .eq("id", contributorId);
+
+        await supabase.from("transaction_histories").insert({
+          id: "tx-mid-fail-" + Date.now() + Math.floor(Math.random() * 1000),
+          bill_id: bill.id,
+          bill_title: bill.title,
+          contributor_name: contributor.name,
+          amount: receivedAmount,
+          status: "FAILED",
+          payment_method: `Midtrans ${paymentType}`,
+        });
+
+        await supabase.from("notifications").insert({
+          id: "notif-mid-fail-" + Date.now(),
+          bill_id: bill.id,
+          bill_title: bill.title,
+          message: `Pembayaran Midtrans dari ${contributor.name} gagal atau kedaluwarsa. Status: ${transactionStatus}.`,
+          type: "INFO",
+        });
+
+        return res.json({
+          success: true,
+          message: `Webhook Midtrans diproses sebagai transaksi gagal: ${transactionStatus}.`,
+        });
+      }
+
+      if (!isSuccessfulMidtransStatus(transactionStatus, fraudStatus)) {
+        return res.json({
+          success: true,
+          message: `Webhook Midtrans diterima. Status masih ${transactionStatus}, belum ditandai lunas.`,
+        });
+      }
+
+      const paidAt = new Date().toISOString();
+
+      await supabase
+        .from("contributors")
+        .update({
+          payment_status: "PAID",
+          paid_at: paidAt,
+          transaction_id: transactionId,
+        })
+        .eq("id", contributorId);
+
+      await supabase.from("transaction_histories").insert({
+        id: "tx-mid-ok-" + Date.now() + Math.floor(Math.random() * 1000),
+        bill_id: bill.id,
+        bill_title: bill.title,
+        contributor_name: contributor.name,
+        amount: receivedAmount,
+        status: "SUCCESS",
+        payment_method: `Midtrans ${paymentType}`,
+      });
+
+      await supabase.from("notifications").insert({
+        id: "notif-mid-pay-" + Date.now(),
+        bill_id: bill.id,
+        bill_title: bill.title,
+        message: `✅ Pembayaran Rp ${receivedAmount.toLocaleString("id-ID")} dari ${contributor.name} berhasil melalui Midtrans (${paymentType}).`,
+        type: "PAYMENT_RECEIVED",
+      });
+
+      const updatedBill = await fetchBillWithDetails(String(billId));
+      const allPaid = updatedBill?.contributors.every((c) => c.paymentStatus === "PAID");
+
+      if (allPaid) {
+        await supabase.from("bills").update({ status: "COMPLETED" }).eq("id", billId);
+
+        await supabase.from("notifications").insert({
+          id: "notif-mid-comp-" + Date.now(),
+          bill_id: bill.id,
+          bill_title: bill.title,
+          message: `🎉 PATUNGAN LUNAS VIA MIDTRANS! Seluruh Rp ${Number(bill.totalAmount).toLocaleString("id-ID")} untuk '${bill.title}' telah berhasil dipenuhi.`,
+          type: "BILL_COMPLETED",
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Webhook Midtrans berhasil diproses.",
+        updatedStatus: "PAID",
+        billStatus: allPaid ? "COMPLETED" : "LOCKED",
+        transactionId,
+      });
+    } catch (error: any) {
+      console.error("Midtrans webhook error:", error);
+      return res.status(500).json({
+        error: "Terjadi kesalahan saat memproses webhook Midtrans.",
+      });
+    }
   });
 
   // ----------------------------------------------------------

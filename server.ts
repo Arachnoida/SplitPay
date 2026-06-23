@@ -625,6 +625,24 @@ async function start() {
   });
 
   // ----------------------------------------------------------
+  //  MENU: GET ALL AVAILABLE
+  // ----------------------------------------------------------
+  app.get("/api/menu", async (_req, res) => {
+    const { data, error } = await supabase
+      .from("menu_items")
+      .select("*")
+      .eq("is_available", true)
+      .order("category")
+      .order("name");
+
+    if (error) {
+      return res.status(500).json({ error: "Gagal mengambil data menu." });
+    }
+
+    res.json(data || []);
+  });
+
+  // ----------------------------------------------------------
   //  RESET (opsional — hapus semua data)
   // ----------------------------------------------------------
   app.post("/api/reset", async (_req, res) => {

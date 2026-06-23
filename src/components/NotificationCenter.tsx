@@ -40,15 +40,14 @@ export default function NotificationCenter({ notifications, onRefresh }: Notific
           </div>
         ) : (
           notifications.map((notif) => (
-            <div 
-              key={notif.id} 
-              className={`p-3.5 border rounded-xl flex items-start gap-3 transition-colors ${
-                notif.type === "BILL_COMPLETED" 
-                  ? "bg-emerald-50 border-emerald-300 text-emerald-950" 
+            <div
+              key={notif.id}
+              className={`p-3.5 border rounded-xl flex items-start gap-3 transition-colors ${notif.type === "BILL_COMPLETED"
+                  ? "bg-emerald-50 border-emerald-300 text-emerald-950"
                   : notif.type === "PAYMENT_RECEIVED"
                     ? "bg-emerald-50/50 border-emerald-200/60 text-emerald-950"
                     : "bg-slate-50/50 border-slate-200 text-slate-800"
-              }`}
+                }`}
             >
               <div className="shrink-0 mt-0.5">
                 {notif.type === "BILL_COMPLETED" ? (

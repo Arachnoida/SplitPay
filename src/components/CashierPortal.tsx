@@ -1,82 +1,99 @@
-import React, { useState } from "react";
-import { Plus, Trash, Copy, Check, Sparkles, Receipt, HelpCircle } from "lucide-react";
+import React, { useState, useEffect } from "react";
+import { Plus, Minus, Trash2, Copy, Check, Sparkles, Receipt, HelpCircle, Search, ShoppingCart, X } from "lucide-react";
 import { Bill, BillItem } from "../types";
+
+interface MenuItem {
+  id: string;
+  name: string;
+  price: number;
+  category: string;
+  emoji: string;
+  is_available: boolean;
+}
+
+interface CartItem extends MenuItem {
+  quantity: number;
+}
 
 interface CashierPortalProps {
   onBillCreated: (bill: Bill) => void;
   setActiveTab: (tab: string) => void;
-  currentUser: { id: string; username: string; name: string } | null;
+  currentUser: { id: string; username: string; name: string; role: 'admin' | 'user' } | null;
 }
 
 export default function CashierPortal({ onBillCreated, setActiveTab, currentUser }: CashierPortalProps) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [items, setItems] = useState<Omit<BillItem, "id">[]>([
-    { name: "Sate Ayam Madura", price: 35000, quantity: 2 },
-    { name: "Es Teh Manis Selasih", price: 10000, quantity: 2 },
-  ]);
+  const [cart, setCart] = useState<CartItem[]>([]);
+
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [menuLoading, setMenuLoading] = useState(true);
+  const [menuError, setMenuError] = useState("");
+  const [search, setSearch] = useState("");
+  const [activeCategory, setActiveCategory] = useState("Semua");
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [successBill, setSuccessBill] = useState<Bill | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Quick Preset Helper
-  const applyPreset = (presetName: string) => {
-    if (presetName === "seafood") {
-      setTitle("Makan Seafood Bersama");
-      setDescription("Sesi makan malam tim selepas gajian di Resto Sari Laut");
-      setItems([
-        { name: "Kepiting Saus Padang Jumbo", price: 180000, quantity: 1 },
-        { name: "Cah Kangkung Bawang Putih", price: 25000, quantity: 2 },
-        { name: "Kerapu Bakar Madu", price: 95000, quantity: 1 },
-        { name: "Nasi Putih Premium Cumi", price: 8000, quantity: 5 },
-        { name: "Es Kelapa Muda Gelas", price: 15000, quantity: 5 },
-      ]);
-    } else if (presetName === "coffee") {
-      setTitle("Coffee Break Syukuran");
-      setDescription("Syukuran rilis proyek baru, santai sore di kedai kopi");
-      setItems([
-        { name: "Iced Caramel Macchiato Artisanal", price: 42000, quantity: 3 },
-        { name: "Espresso Double Shot", price: 28000, quantity: 2 },
-        { name: "Almond Croissant Butter", price: 35000, quantity: 4 },
-        { name: "Truffle Fries Garing", price: 38000, quantity: 2 },
-      ]);
-    } else if (presetName === "villa") {
-      setTitle("Patungan Seru Staycation");
-      setDescription("Sewa Villa Hijau Puncak akhir pekan untuk refreshing");
-      setItems([
-        { name: "Biaya Sewa Villa 2 Hari 1 Malam", price: 1200000, quantity: 1 },
-        { name: "Paket BBQ Grill Ekonomis", price: 300000, quantity: 1 },
-        { name: "Cemilan & Marshmallow Api Unggun", price: 100000, quantity: 1 },
-      ]);
-    }
-    setError("");
+  // Fetch menu dari Supabase via API
+  useEffect(() => {
+    const fetchMenu = async () => {
+      setMenuLoading(true);
+      setMenuError("");
+      try {
+        const res = await fetch("/api/menu");
+        if (!res.ok) throw new Error("Gagal memuat menu.");
+        const data: MenuItem[] = await res.json();
+        setMenuItems(data);
+      } catch (e: any) {
+        setMenuError(e.message || "Gagal memuat menu dari server.");
+      } finally {
+        setMenuLoading(false);
+      }
+    };
+    fetchMenu();
+  }, []);
+
+  // Daftar kategori unik
+  const categories = ["Semua", ...Array.from(new Set(menuItems.map((m) => m.category)))];
+
+  // Filter menu berdasarkan search & kategori
+  const filteredMenu = menuItems.filter((m) => {
+    const matchSearch = m.name.toLowerCase().includes(search.toLowerCase());
+    const matchCat = activeCategory === "Semua" || m.category === activeCategory;
+    return matchSearch && matchCat;
+  });
+
+  // Tambah ke keranjang
+  const addToCart = (item: MenuItem) => {
+    setCart((prev) => {
+      const existing = prev.find((c) => c.id === item.id);
+      if (existing) {
+        return prev.map((c) => c.id === item.id ? { ...c, quantity: c.quantity + 1 } : c);
+      }
+      return [...prev, { ...item, quantity: 1 }];
+    });
   };
 
-  const handleAddItem = () => {
-    setItems([...items, { name: "", price: 0, quantity: 1 }]);
+  // Ubah quantity di keranjang
+  const changeQty = (id: string, delta: number) => {
+    setCart((prev) =>
+      prev
+        .map((c) => c.id === id ? { ...c, quantity: c.quantity + delta } : c)
+        .filter((c) => c.quantity > 0)
+    );
   };
 
-  const handleRemoveItem = (index: number) => {
-    const updated = [...items];
-    updated.splice(index, 1);
-    setItems(updated);
+  // Hapus dari keranjang
+  const removeFromCart = (id: string) => {
+    setCart((prev) => prev.filter((c) => c.id !== id));
   };
 
-  const handleItemChange = (index: number, field: keyof Omit<BillItem, "id">, value: any) => {
-    const updated = [...items];
-    if (field === "price") {
-      updated[index].price = Math.max(0, Number(value) || 0);
-    } else if (field === "quantity") {
-      updated[index].quantity = Math.max(1, Number(value) || 1);
-    } else {
-      updated[index].name = value;
-    }
-    setItems(updated);
-  };
+  const getCartQty = (id: string) => cart.find((c) => c.id === id)?.quantity || 0;
 
-  // Auto calculate total
-  const calculatedTotal = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const calculatedTotal = cart.reduce((sum, c) => sum + c.price * c.quantity, 0);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -86,21 +103,19 @@ export default function CashierPortal({ onBillCreated, setActiveTab, currentUser
       setError("Nama patungan wajib diisi.");
       return;
     }
-
-    if (calculatedTotal <= 0) {
-      setError("Total tagihan harus lebih besar dari Rp 0.");
+    if (cart.length === 0) {
+      setError("Keranjang masih kosong. Pilih minimal satu menu.");
       return;
     }
 
-    const compiledItems = items
-      .filter((itm) => itm.name.trim() !== "")
-      .map((itm, index) => ({
-        id: `csh-itm-${Date.now()}-${index}`,
-        ...itm,
-      }));
+    const compiledItems: BillItem[] = cart.map((c, index) => ({
+      id: `csh-itm-${Date.now()}-${index}`,
+      name: c.name,
+      price: c.price,
+      quantity: c.quantity,
+    }));
 
     setLoading(true);
-
     try {
       const response = await fetch("/api/bills", {
         method: "POST",
@@ -131,326 +146,311 @@ export default function CashierPortal({ onBillCreated, setActiveTab, currentUser
 
   const copyLink = () => {
     if (!successBill) return;
-    const shareableLink = `${window.location.origin}/join/${successBill.code}`;
-    navigator.clipboard.writeText(shareableLink);
+    navigator.clipboard.writeText(`${window.location.origin}/join/${successBill.code}`);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  return (
-    <div className="space-y-6" id="cashier-root-panel">
-      {/* Upper Pitch Card */}
-      <div className="bg-emerald-900/10 border border-emerald-500/20 rounded-2xl p-6 text-emerald-950">
-        <div className="flex items-start gap-4">
-          <div className="p-3 bg-emerald-500 text-white rounded-xl shadow-md shrink-0">
-            <Receipt className="w-6 h-6" />
+  const resetForm = () => {
+    setSuccessBill(null);
+    setTitle("");
+    setDescription("");
+    setCart([]);
+    setSearch("");
+    setActiveCategory("Semua");
+    setError("");
+  };
+
+  // ─── SUCCESS SCREEN ────────────────────────────────────────
+  if (successBill) {
+    return (
+      <div className="max-w-2xl mx-auto bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden animate-fade-in">
+        <div className="bg-emerald-600 p-8 text-center text-white relative">
+          <div className="absolute right-4 top-4 bg-emerald-700/50 px-3 py-1.5 rounded-full text-xs font-mono font-semibold">KASIR PORTAL</div>
+          <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center mx-auto mb-4">
+            <Check className="w-8 h-8 stroke-[3]" />
           </div>
-          <div>
-            <h3 className="text-lg font-bold text-slate-900">Portal Utama Kasir SplitBay</h3>
-            <p className="text-sm text-slate-600 mt-1 max-w-2xl leading-relaxed">
-              Kasir cukup memasukkan nama tagihan, deskripsi, dan rincian item. Sistem kami akan membuatkan{" "}
-              <strong className="text-emerald-700">Kode & Link Patungan Unik</strong>. Kasir tidak perlu pusing membagi nominal atau mengonfirmasi satu per satu pelunasannya, biar pembeli dan tim mereka yang melakukan pembagian mandiri!
-            </p>
+          <h2 className="text-2xl font-black">Tagihan Patungan Terbit!</h2>
+          <p className="text-emerald-100 text-xs mt-1.5">Bagikan kode atau link ini kepada pelanggan</p>
+        </div>
+
+        <div className="p-8 space-y-6">
+          <div className="bg-slate-50 rounded-2xl p-6 text-center space-y-3 border border-slate-100">
+            <span className="text-xs text-slate-400 font-bold uppercase tracking-wider block">KODE PATUNGAN SPLITBAY</span>
+            <div className="text-4xl font-black tracking-widest font-mono text-emerald-800 bg-white border border-slate-200 rounded-xl py-3 px-6 shadow-xs inline-block">
+              {successBill.code}
+            </div>
+            <p className="text-xs text-slate-500">Gunakan kode ini di handphone pembeli untuk bergabung dan split nominal.</p>
+          </div>
+
+          <div className="space-y-3">
+            <button onClick={copyLink} className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-2xl transition-all cursor-pointer shadow-md">
+              {copied ? <><Check className="w-5 h-5" />Berhasil Disalin!</> : <><Copy className="w-5 h-5" />Salin Link Patungan Pembeli</>}
+            </button>
+            <div className="flex gap-2">
+              <button type="button" onClick={resetForm} className="flex-1 px-5 py-3 border border-slate-200 text-slate-700 font-semibold rounded-xl text-xs hover:bg-slate-50 transition-all cursor-pointer">
+                Buat Tagihan Lain
+              </button>
+              <button type="button" onClick={() => setActiveTab("patungan")} className="flex-1 px-5 py-3 bg-emerald-900 text-emerald-100 font-bold rounded-xl text-xs hover:bg-emerald-800 transition-all cursor-pointer">
+                Buka Ruang Patungan Ini
+              </button>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-100 pt-4 space-y-2">
+            <span className="text-xs font-bold text-slate-700 block uppercase tracking-wider">Detil Transaksi:</span>
+            <div className="grid grid-cols-2 gap-y-2 text-xs">
+              <span className="text-slate-400">Judul</span>
+              <span className="text-slate-800 font-bold text-right">{successBill.title}</span>
+              <span className="text-slate-400">Total Harga</span>
+              <span className="text-emerald-700 font-black font-mono text-right">Rp {successBill.totalAmount.toLocaleString("id-ID")}</span>
+            </div>
           </div>
         </div>
       </div>
+    );
+  }
 
-      {!successBill ? (
+  // ─── MAIN FORM ─────────────────────────────────────────────
+  return (
+    <div className="space-y-6">
+      {/* Header Card */}
+      <div className="bg-emerald-900/10 border border-emerald-500/20 rounded-2xl p-5 flex items-start gap-4">
+        <div className="p-3 bg-emerald-500 text-white rounded-xl shadow-md shrink-0">
+          <Receipt className="w-6 h-6" />
+        </div>
+        <div>
+          <h3 className="text-lg font-bold text-slate-900">Portal Kasir SplitBay</h3>
+          <p className="text-sm text-slate-600 mt-0.5 max-w-2xl leading-relaxed">
+            Cari dan klik menu untuk menambahkan ke keranjang, lalu atur jumlahnya. Sistem akan otomatis menghitung total tagihan.
+          </p>
+        </div>
+      </div>
+
+      <form onSubmit={handleSubmit}>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Main Maker Form */}
-          <form
-            onSubmit={handleSubmit}
-            className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-6"
-          >
-            <div className="border-b border-slate-100 pb-4 flex justify-between items-center">
-              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                <Plus className="w-5 h-5 text-emerald-600" />
-                Buat Tagihan Patungan Baru
+
+          {/* ── Kiri: Menu Browser + Info Tagihan ── */}
+          <div className="lg:col-span-2 space-y-5">
+
+            {/* Info Tagihan */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+              <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-500" />
+                Info Tagihan
               </h2>
-              <span className="text-xs text-slate-500 font-mono">STEP 1 OF 3</span>
-            </div>
-
-            {error && (
-              <div className="p-4 bg-red-50 text-red-700 text-sm rounded-xl border border-red-100">
-                {error}
-              </div>
-            )}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-600">Nama Tagihan / Acara *</label>
-                <input
-                  type="text"
-                  placeholder="Contoh: Makan Siang Tim Finance, Kado Ultah Siska"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                    }
-                  }}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 transition-colors text-slate-850 focus:outline-hidden"
-                  required
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-slate-600">Deskripsi Singkat</label>
-                <input
-                  type="text"
-                  placeholder="Keterangan opsional untuk pembayar"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                    }
-                  }}
-                  className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:bg-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 transition-colors text-slate-850 focus:outline-hidden"
-                />
-              </div>
-            </div>
-
-            {/* Items Table */}
-            <div className="space-y-3">
-              <div className="flex justify-between items-center">
-                <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">Rincian Menu / Pesanan</h3>
-                <button
-                  type="button"
-                  onClick={handleAddItem}
-                  className="text-xs text-emerald-600 hover:text-emerald-700 font-bold flex items-center gap-1 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-100 transition-all hover:bg-emerald-100 cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  Tambah Baris
-                </button>
-              </div>
-
-              <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-200">
-                <div className="bg-slate-50 p-3 grid grid-cols-12 gap-2 text-xs font-bold text-slate-550">
-                  <div className="col-span-6">NAMA ITEM / LAYANAN</div>
-                  <div className="col-span-3 text-right">HARGA SATUAN (RP)</div>
-                  <div className="col-span-2 text-center">QTY</div>
-                  <div className="col-span-1"></div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Nama Patungan <span className="text-red-400">*</span></label>
+                  <input
+                    type="text"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="Contoh: Makan Siang Tim Marketing"
+                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 focus:bg-white focus:ring-1 focus:ring-emerald-500 rounded-xl text-xs text-slate-800 focus:outline-none font-medium"
+                  />
                 </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Deskripsi (opsional)</label>
+                  <input
+                    type="text"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Contoh: Sesi makan siang setelah rapat"
+                    className="w-full px-3 py-2.5 bg-slate-50 border border-slate-200 focus:bg-white focus:ring-1 focus:ring-emerald-500 rounded-xl text-xs text-slate-800 focus:outline-none font-medium"
+                  />
+                </div>
+              </div>
+            </div>
 
-                <div className="space-y-2 p-2 bg-slate-50/50">
-                  {items.map((item, idx) => (
-                    <div key={idx} className="grid grid-cols-12 gap-2 items-center bg-white p-2 rounded-lg border border-slate-200 shadow-2xs">
-                      <div className="col-span-6">
-                        <input
-                          type="text"
-                          placeholder="Nama makanan/minuman/jasa..."
-                          value={item.name}
-                          onChange={(e) => handleItemChange(idx, "name", e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                            }
-                          }}
-                          className="w-full px-2 py-1 text-sm bg-transparent border-b border-transparent hover:border-slate-350 focus:border-emerald-500 focus:outline-hidden text-slate-800"
-                          required
-                        />
+            {/* Menu Browser */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4">
+              <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <Search className="w-4 h-4 text-emerald-500" />
+                Pilih Menu
+              </h2>
+
+              {/* Search */}
+              <div className="relative">
+                <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Cari nama menu..."
+                  className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 focus:bg-white focus:ring-1 focus:ring-emerald-500 rounded-xl text-xs text-slate-700 focus:outline-none"
+                />
+              </div>
+
+              {/* Category Tabs */}
+              <div className="flex gap-2 flex-wrap">
+                {categories.map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setActiveCategory(cat)}
+                    className={`px-3 py-1 rounded-full text-[11px] font-bold transition-all cursor-pointer ${activeCategory === cat
+                        ? "bg-emerald-600 text-white"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+
+              {/* Menu Grid */}
+              {menuLoading ? (
+                <div className="py-10 text-center text-xs text-slate-400">
+                  <div className="w-6 h-6 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                  Memuat menu...
+                </div>
+              ) : menuError ? (
+                <div className="py-8 text-center text-xs text-red-500">{menuError}</div>
+              ) : filteredMenu.length === 0 ? (
+                <div className="py-8 text-center text-xs text-slate-400">Menu tidak ditemukan.</div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 max-h-72 overflow-y-auto pr-1">
+                  {filteredMenu.map((item) => {
+                    const qty = getCartQty(item.id);
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => addToCart(item)}
+                        className={`relative text-left p-3 rounded-xl border transition-all cursor-pointer group ${qty > 0
+                            ? "border-emerald-400 bg-emerald-50"
+                            : "border-slate-200 bg-slate-50 hover:border-emerald-300 hover:bg-emerald-50/50"
+                          }`}
+                      >
+                        <div className="text-2xl mb-1">{item.emoji}</div>
+                        <div className="text-[11px] font-bold text-slate-800 leading-tight line-clamp-2">{item.name}</div>
+                        <div className="text-[10px] font-mono text-emerald-700 font-bold mt-1">
+                          Rp {item.price.toLocaleString("id-ID")}
+                        </div>
+                        {qty > 0 && (
+                          <span className="absolute -top-1.5 -right-1.5 bg-emerald-500 text-white text-[10px] font-black w-5 h-5 rounded-full flex items-center justify-center shadow">
+                            {qty}
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Kanan: Keranjang ── */}
+          <div className="space-y-5">
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 space-y-4 sticky top-4">
+              <h2 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                <ShoppingCart className="w-4 h-4 text-emerald-500" />
+                Keranjang
+                {cart.length > 0 && (
+                  <span className="ml-auto bg-emerald-100 text-emerald-700 text-[10px] font-black px-2 py-0.5 rounded-full">
+                    {cart.reduce((s, c) => s + c.quantity, 0)} item
+                  </span>
+                )}
+              </h2>
+
+              {cart.length === 0 ? (
+                <div className="py-8 text-center text-xs text-slate-400 space-y-2">
+                  <ShoppingCart className="w-8 h-8 mx-auto text-slate-200" />
+                  <p>Belum ada menu dipilih.<br />Klik menu di sebelah kiri untuk menambahkan.</p>
+                </div>
+              ) : (
+                <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                  {cart.map((c) => (
+                    <div key={c.id} className="flex items-center gap-2 p-2.5 bg-slate-50 rounded-xl border border-slate-100">
+                      <span className="text-lg shrink-0">{c.emoji}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[11px] font-bold text-slate-800 truncate">{c.name}</div>
+                        <div className="text-[10px] font-mono text-emerald-700">
+                          Rp {(c.price * c.quantity).toLocaleString("id-ID")}
+                        </div>
                       </div>
-                      <div className="col-span-3">
-                        <input
-                          type="number"
-                          placeholder="Harga"
-                          value={item.price || ""}
-                          onChange={(e) => handleItemChange(idx, "price", e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                            }
-                          }}
-                          className="w-full px-2 py-1 text-sm text-right bg-transparent border-b border-transparent hover:border-slate-350 focus:border-emerald-500 focus:outline-hidden text-slate-800 font-mono"
-                          min="0"
-                        />
-                      </div>
-                      <div className="col-span-2">
-                        <input
-                          type="number"
-                          placeholder="Qty"
-                          value={item.quantity || ""}
-                          onChange={(e) => handleItemChange(idx, "quantity", e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                            }
-                          }}
-                          className="w-full px-2 py-1 text-sm text-center bg-transparent border-b border-transparent hover:border-slate-350 focus:border-emerald-500 focus:outline-hidden text-slate-800 font-mono"
-                          min="1"
-                        />
-                      </div>
-                      <div className="col-span-1 text-center font-sans">
+                      <div className="flex items-center gap-1 shrink-0">
                         <button
                           type="button"
-                          onClick={() => handleRemoveItem(idx)}
-                          disabled={items.length <= 1}
-                          className="text-slate-400 hover:text-red-500 disabled:opacity-35 transition-colors p-1 cursor-pointer"
+                          onClick={() => changeQty(c.id, -1)}
+                          className="w-6 h-6 rounded-lg bg-slate-200 hover:bg-slate-300 flex items-center justify-center cursor-pointer transition-all"
                         >
-                          <Trash className="w-4 h-4" />
+                          <Minus className="w-3 h-3 text-slate-700" />
+                        </button>
+                        <span className="w-5 text-center text-xs font-black text-slate-800">{c.quantity}</span>
+                        <button
+                          type="button"
+                          onClick={() => changeQty(c.id, 1)}
+                          className="w-6 h-6 rounded-lg bg-emerald-100 hover:bg-emerald-200 flex items-center justify-center cursor-pointer transition-all"
+                        >
+                          <Plus className="w-3 h-3 text-emerald-700" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeFromCart(c.id)}
+                          className="w-6 h-6 rounded-lg hover:bg-red-100 flex items-center justify-center cursor-pointer transition-all ml-0.5"
+                        >
+                          <Trash2 className="w-3 h-3 text-slate-400 hover:text-red-500" />
                         </button>
                       </div>
                     </div>
                   ))}
                 </div>
+              )}
+
+              {/* Total & Submit */}
+              <div className="border-t border-slate-100 pt-3 space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-xs text-slate-500 font-semibold">Total</span>
+                  <span className="text-lg font-black font-mono text-emerald-700">
+                    Rp {calculatedTotal.toLocaleString("id-ID")}
+                  </span>
+                </div>
+
+                {error && (
+                  <div className="p-2.5 bg-red-50 border border-red-200 rounded-xl text-[11px] text-red-600 font-medium">
+                    ⚠️ {error}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={loading || cart.length === 0}
+                  className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-all cursor-pointer shadow-md shadow-emerald-600/10"
+                >
+                  {loading ? "Menyimpan..." : "Buat Tagihan Patungan →"}
+                </button>
+
+                {cart.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setCart([])}
+                    className="w-full py-2 text-xs text-slate-400 hover:text-red-500 transition-colors cursor-pointer flex items-center justify-center gap-1"
+                  >
+                    <X className="w-3 h-3" /> Kosongkan Keranjang
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* Total Display */}
-            <div className="p-5 bg-emerald-950 text-white rounded-2xl flex flex-col md:flex-row justify-between items-center gap-4 shadow-xs">
-              <div>
-                <span className="text-xs text-emerald-300 font-semibold tracking-wider block uppercase">Akumulasi Total Pembayaran</span>
-                <span className="text-3xl font-bold font-mono text-emerald-400">
-                  Rp {calculatedTotal.toLocaleString("id-ID")}
-                </span>
-              </div>
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full md:w-auto px-6 py-3 bg-emerald-500 hover:bg-emerald-400 text-gray-950 font-bold rounded-xl shadow-lg shadow-emerald-950/20 hover:shadow-emerald-500/10 transition-all cursor-pointer disabled:opacity-50"
-              >
-                {loading ? "Menyimpan tagihan..." : "Buat Tagihan Patungan →"}
-              </button>
-            </div>
-          </form>
-
-          {/* Presets and Tutorial Tips */}
-          <div className="space-y-6">
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 space-y-4">
-              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4 text-emerald-500" />
-                Template Tagihan Instan
-              </h3>
-              <p className="text-xs text-slate-500 leading-relaxed">
-                Klik salah satu preset di bawah ini untuk mengisi simulasi meja kasir secara otomatis:
-              </p>
-
-              <div className="space-y-3">
-                <button
-                  type="button"
-                  onClick={() => applyPreset("seafood")}
-                  className="w-full text-left p-3 border border-slate-200 rounded-xl hover:border-emerald-300 hover:bg-emerald-50/40 transition-all cursor-pointer"
-                >
-                  <span className="font-semibold text-xs text-slate-800 block">🦐 1. Makan Seafood Tim</span>
-                  <span className="text-[11px] text-slate-500 block mt-0.5 font-mono">Total: Rp 350.000 / 5 porsi</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => applyPreset("coffee")}
-                  className="w-full text-left p-3 border border-slate-200 rounded-xl hover:border-emerald-300 hover:bg-emerald-50/40 transition-all cursor-pointer"
-                >
-                  <span className="font-semibold text-xs text-slate-800 block">☕ 2. Santai Sore Kopi & Croissant</span>
-                  <span className="text-[11px] text-slate-500 block mt-0.5 font-mono">Total: Rp 370.000 / 4 Orang</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => applyPreset("villa")}
-                  className="w-full text-left p-3 border border-slate-200 rounded-xl hover:border-emerald-300 hover:bg-emerald-50/40 transition-all cursor-pointer"
-                >
-                  <span className="font-semibold text-xs text-slate-800 block">🏡 3. Staycation Villa Hijau</span>
-                  <span className="text-[11px] text-slate-500 block mt-0.5 font-mono">Total: Rp 1.600.000 / 3 hari</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="bg-amber-50/70 border border-amber-500/10 rounded-2xl p-6 space-y-3">
+            {/* Tips */}
+            <div className="bg-amber-50/70 border border-amber-500/10 rounded-2xl p-5 space-y-3">
               <div className="flex items-center gap-2 text-amber-900 font-bold text-sm">
                 <HelpCircle className="w-4 h-4" />
-                Mengapa cara ini lebih baik?
+                Tips Kasir
               </div>
               <ul className="text-xs text-amber-800 space-y-2 list-disc pl-4 leading-relaxed">
-                <li>Kasir terbebas dari mengurus nama-nama pengirim transfer bank.</li>
-                <li>Invoice tunggal dipecah otomatis ke banyak penyetor via webhook.</li>
-                <li>Bebas dari kesalahan kalkulasi manual saat membagi bayaran.</li>
-                <li>Live tracker menunjukkan status porsi pembayaran terverifikasi secara real-time.</li>
+                <li>Klik menu untuk langsung masuk keranjang.</li>
+                <li>Gunakan tombol <strong>+</strong> dan <strong>−</strong> untuk atur jumlah.</li>
+                <li>Setelah tagihan dibuat, bagikan kode ke pembeli.</li>
+                <li>Pembeli bisa join dan split tagihan secara mandiri.</li>
               </ul>
             </div>
           </div>
+
         </div>
-      ) : (
-        /* Success Screen */
-        <div className="max-w-2xl mx-auto bg-white rounded-3xl border border-slate-200 shadow-xl overflow-hidden animate-fade-in" id="cashier-success-notif">
-          <div className="bg-emerald-600 p-8 text-center text-white relative">
-            <div className="absolute right-4 top-4 bg-emerald-700/50 px-3 py-1.5 rounded-full text-xs font-mono font-semibold">
-              KASIR PORTAL
-            </div>
-            <div className="w-16 h-16 bg-white/10 rounded-2xl flex items-center justify-center mx-auto mb-4 text-white shadow-inner">
-              <Check className="w-8 h-8 stroke-[3]" />
-            </div>
-            <h2 className="text-2xl font-black">Tagihan Patungan Terbit!</h2>
-            <p className="text-emerald-100 text-xs mt-1.5">Silakan bagikan Kode atau Link di bawah ini kepada pelanggan</p>
-          </div>
-
-          <div className="p-8 space-y-6">
-            <div className="bg-slate-50 rounded-2xl p-6 text-center space-y-3 border border-slate-100">
-              <span className="text-xs text-slate-400 font-bold uppercase tracking-wider block">KODE PATUNGAN SPLITBAY</span>
-              <div className="text-4xl font-black tracking-widest font-mono text-emerald-800 bg-white border border-slate-200 rounded-xl py-3 px-6 shadow-xs inline-block">
-                {successBill.code}
-              </div>
-              <p className="text-xs text-slate-500">Gunakan kode ini di handphone pembeli untuk bergabung dan split nominal.</p>
-            </div>
-
-            <div className="space-y-3">
-              <button
-                onClick={copyLink}
-                className="w-full flex items-center justify-center gap-2 px-6 py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-2xl transition-all cursor-pointer shadow-md"
-              >
-                {copied ? (
-                  <>
-                    <Check className="w-5 h-5" />
-                    Berhasil Disalin!
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-5 h-5" />
-                    Salin Link Patungan Pembeli
-                  </>
-                )}
-              </button>
-
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSuccessBill(null);
-                    setTitle("");
-                    setDescription("");
-                    setItems([
-                      { name: "Sate Ayam Madura", price: 35000, quantity: 2 },
-                      { name: "Es Teh Manis Selasih", price: 10000, quantity: 2 },
-                    ]);
-                  }}
-                  className="flex-1 px-5 py-3 border border-slate-200 text-slate-705 font-semibold rounded-xl text-xs hover:bg-slate-50 transition-all text-center cursor-pointer font-sans"
-                >
-                  Buat Tagihan Lain
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveTab("patungan");
-                  }}
-                  className="flex-1 px-5 py-3 bg-emerald-900 border border-emerald-950 text-emerald-100 font-bold rounded-xl text-xs hover:bg-emerald-805 transition-all text-center cursor-pointer font-sans"
-                >
-                  Buka Ruang Patungan Ini
-                </button>
-              </div>
-            </div>
-
-            <div className="border-t border-slate-150 pt-4 space-y-2">
-              <span className="text-xs font-bold text-slate-700 block uppercase tracking-wider">Detil Transaksi:</span>
-              <div className="grid grid-cols-2 gap-y-2 text-xs font-sans">
-                <span className="text-slate-400">Judul</span>
-                <span className="text-slate-800 font-bold text-right">{successBill.title}</span>
-                <span className="text-slate-400">Total Harga</span>
-                <span className="text-emerald-700 font-black font-mono text-right">Rp {successBill.totalAmount.toLocaleString("id-ID")}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      </form>
     </div>
   );
 }

@@ -1,32 +1,219 @@
-import React, { useState, useEffect } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import {
-  Users,
-  UserPlus,
-  CheckCircle2,
   AlertCircle,
-  RefreshCw,
-  Sparkles,
-  ChevronRight,
   ArrowLeft,
-  Key,
-  ShoppingCart,
-  CreditCard,
-  Send,
-  ShieldCheck,
-  Trash2,
-  Edit3,
+  CheckCircle2,
+  ChevronRight,
   Copy,
+  CreditCard,
+  ExternalLink,
+  Key,
+  QrCode,
+  RefreshCw,
+  ShieldCheck,
+  ShoppingCart,
+  Trash2,
+  UserPlus,
+  Users,
 } from "lucide-react";
-import { Bill, BillItem } from "../types";
+import type { Bill } from "../types";
 
-// Pesanan per anggota: itemId → qty yang diambil
-type MemberOrders = Record<string, Record<string, number>>;
+type CurrentUser = {
+  id: string;
+  username: string;
+  name: string;
+  role: "admin" | "user";
+};
+
+type AutoBalanceType = "equal" | "remainder";
+
+type MidtransChannel =
+  | "bca_va"
+  | "bni_va"
+  | "bri_va"
+  | "cimb_va"
+  | "permata_va"
+  | "mandiri_bill"
+  | "gopay_qris"
+  | "shopeepay"
+  | "qris";
+
+type ApiErrorPayload = {
+  error?: string;
+  message?: string;
+  detail?: unknown;
+};
+
+type MidtransAction = {
+  name?: string;
+  method?: string;
+  url?: string;
+};
+
+type MidtransInstructionPayload = {
+  orderId: string;
+  transactionId?: string;
+  transactionStatus?: string;
+  paymentType?: string;
+  channel: MidtransChannel;
+  redirectUrl?: string;
+  token?: string;
+  vaNumbers?: Array<{ bank: string; vaNumber: string }>;
+  billerCode?: string;
+  billKey?: string;
+  paymentCode?: string;
+  qrString?: string;
+  qrImageUrl?: string;
+  actions?: MidtransAction[];
+  rawStatus?: string;
+  expiresAt?: string;
+};
+
+type MidtransCreateResponse = {
+  success: boolean;
+  message?: string;
+  instruction: MidtransInstructionPayload;
+  midtrans?: {
+    statusCode?: string;
+    statusMessage?: string;
+    transactionId?: string;
+    transactionStatus?: string;
+  };
+};
+
+type MidtransInstruction = MidtransInstructionPayload & {
+  createdAt: string;
+};
 
 interface CustomerWorkspaceProps {
   currentBill: Bill | null;
   onSelectBill: (bill: Bill | null) => void;
   onRefreshNotifications: () => void;
-  currentUser?: { id: string; username: string; name: string; role: "admin" | "user" } | null;
+  currentUser?: CurrentUser | null;
+}
+
+const SAMPLE_CODES = [
+  { code: "BAY-4040", label: "Makan Keluarga" },
+  { code: "BAY-9090", label: "Kado Siska" },
+  { code: "BAY-7788", label: "Futsal Komunitas" },
+] as const;
+
+const MIDTRANS_CHANNELS: Array<{
+  value: MidtransChannel;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "bca_va",
+    label: "BCA Virtual Account",
+    description: "Midtrans Core API akan menerbitkan nomor VA BCA langsung di kartu invoice.",
+  },
+  {
+    value: "bni_va",
+    label: "BNI Virtual Account",
+    description: "Midtrans Core API akan menerbitkan nomor VA BNI langsung di kartu invoice.",
+  },
+  {
+    value: "bri_va",
+    label: "BRI Virtual Account",
+    description: "Midtrans Core API akan menerbitkan nomor VA BRI langsung di kartu invoice.",
+  },
+  {
+    value: "cimb_va",
+    label: "CIMB Virtual Account",
+    description:
+      "Midtrans Core API akan menerbitkan nomor VA CIMB jika channel aktif pada akun merchant.",
+  },
+  {
+    value: "permata_va",
+    label: "Permata Virtual Account",
+    description: "Midtrans Core API akan menerbitkan nomor VA Permata langsung di kartu invoice.",
+  },
+  {
+    value: "mandiri_bill",
+    label: "Mandiri Bill Payment",
+    description: "Mandiri memakai Company/Biller Code dan Bill Key, bukan satu nomor VA biasa.",
+  },
+  {
+    value: "gopay_qris",
+    label: "GoPay / QRIS",
+    description: "Midtrans akan mengembalikan QR atau deeplink GoPay/QRIS dari Core API.",
+  },
+  {
+    value: "shopeepay",
+    label: "ShopeePay",
+    description:
+      "Midtrans akan mengembalikan action ShopeePay, seperti redirect atau deeplink pembayaran.",
+  },
+  {
+    value: "qris",
+    label: "QRIS",
+    description: "Midtrans akan mengembalikan QRIS langsung dari Core API jika channel aktif.",
+  },
+];
+
+const formatCurrency = (amount: number) => `Rp ${Number(amount || 0).toLocaleString("id-ID")}`;
+const normalizeName = (value: string) => value.trim().toLowerCase();
+
+const toSafeAmount = (value: string | number) => {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.trunc(parsed);
+};
+
+const compactCredential = (value: string) => value.replace(/\s+/g, "");
+
+const groupPaymentCode = (value?: string) => {
+  if (!value) return "";
+  const cleaned = compactCredential(value);
+  return cleaned.replace(/(.{4})/g, "$1 ").trim();
+};
+
+const getChannelInfo = (channel: MidtransChannel) =>
+  MIDTRANS_CHANNELS.find((item) => item.value === channel) || MIDTRANS_CHANNELS[0];
+
+const isQrLikeChannel = (channel: MidtransChannel) =>
+  channel === "gopay_qris" || channel === "qris" || channel === "shopeepay";
+
+const getUnknownErrorMessage = (error: unknown, fallback = "Terjadi kesalahan.") => {
+  if (error instanceof Error && error.message) return error.message;
+  return fallback;
+};
+
+const readApiError = async (response: Response, fallback: string) => {
+  try {
+    const payload = (await response.json()) as ApiErrorPayload;
+    if (payload.detail) console.error("API detail:", payload.detail);
+    return payload.error || payload.message || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const readJson = async <T,>(response: Response): Promise<T> => (await response.json()) as T;
+
+function StatusBadge({ status }: { status: Bill["status"] }) {
+  if (status === "SHARING") {
+    return (
+      <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+        Membagi Tagihan
+      </span>
+    );
+  }
+
+  if (status === "LOCKED") {
+    return (
+      <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-bold text-indigo-800">
+        Invoice Dikunci
+      </span>
+    );
+  }
+
+  return (
+    <span className="rounded-full border border-emerald-600 bg-emerald-500 px-2 py-0.5 text-[10px] font-bold text-white">
+      Lunas
+    </span>
+  );
 }
 
 export default function CustomerWorkspace({
@@ -38,142 +225,169 @@ export default function CustomerWorkspace({
   const [searchCode, setSearchCode] = useState("");
   const [newMemberName, setNewMemberName] = useState("");
   const [loadingCode, setLoadingCode] = useState(false);
+  const [joining, setJoining] = useState(false);
+  const [lockingBill, setLockingBill] = useState(false);
+  const [autoBalancing, setAutoBalancing] = useState<AutoBalanceType | null>(null);
+  const [savingShare, setSavingShare] = useState<Record<string, boolean>>({});
   const [errorText, setErrorText] = useState("");
   const [successJoinMsg, setSuccessJoinMsg] = useState("");
-  const [pollerId, setPollerId] = useState<any>(null);
-
-  // Payment simulations state
-  const [selectedGateway, setSelectedGateway] = useState<Record<string, string>>({});
-  const [simulatings, setSimulatings] = useState<Record<string, boolean>>({});
-  const [webhookLogs, setWebhookLogs] = useState<string[]>([]);
-  const [paymentModes, setPaymentModes] = useState<Record<string, "qris" | "barcode">>({});
+  const [shareInputs, setShareInputs] = useState<Record<string, string>>({});
+  const [selectedChannel, setSelectedChannel] = useState<Record<string, MidtransChannel>>({});
+  const [creatingPayment, setCreatingPayment] = useState<Record<string, boolean>>({});
+  const [checkingPayment, setCheckingPayment] = useState<Record<string, boolean>>({});
+  const [paymentInstructions, setPaymentInstructions] = useState<
+    Record<string, MidtransInstruction>
+  >({});
   const [copiedStates, setCopiedStates] = useState<Record<string, boolean>>({});
+  const [paymentLogs, setPaymentLogs] = useState<string[]>([]);
 
-  // Generate deterministic VA code or barcode from contributor ID/Name
-  const getVAForContributor = (name: string, id: string, gate: string) => {
-    const numericHash = id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    const isMandiri = gate.toLowerCase().includes("mandiri");
-    const bankSuf = ((numericHash % 89999) + 10000).toString();
-    const phoneSuf =
-      "08123" + ((numericHash % 899) + 100).toString() + ((numericHash % 89) + 10).toString();
+  const currentAssignedTotal = useMemo(
+    () =>
+      currentBill?.contributors.reduce((sum, contributor) => sum + contributor.shareAmount, 0) || 0,
+    [currentBill],
+  );
+  const balanceDifference = currentBill ? currentBill.totalAmount - currentAssignedTotal : 0;
+  const isBalanced = currentBill ? balanceDifference === 0 : false;
+  const canManageBill = currentUser?.role === "admin";
 
-    if (isMandiri) {
-      return `89508 ${bankSuf} 7${numericHash % 9}9 10`;
-    } else {
-      // BCA VA
-      return `3901 ${phoneSuf.substring(1, 5)} ${phoneSuf.substring(5, 9)}`;
+  const getContributorAmountInput = (contributorId: string, fallback: number) => {
+    return shareInputs[contributorId] ?? String(fallback || "");
+  };
+
+  const refreshBillData = async (billId: string) => {
+    const response = await fetch(`/api/bills/${billId}`);
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "Gagal menyegarkan data tagihan."));
     }
+    const updatedBill = await readJson<Bill>(response);
+    onSelectBill(updatedBill);
+    return updatedBill;
   };
 
-  const getBarcodeForContributor = (id: string, amount: number) => {
-    const codeHash = id.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    return `9908${(codeHash % 8999) + 1000}${amount.toString().substring(0, 3)}01`;
-  };
-
-  const handleCopyText = (id: string, text: string) => {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(text);
-    }
-    setCopiedStates((prev) => ({ ...prev, [id]: true }));
-    setTimeout(() => {
-      setCopiedStates((prev) => ({ ...prev, [id]: false }));
-    }, 2000);
-  };
-
-  // Suggest pre-existing codes to jump right in
-  const sampleCodes = [
-    { code: "BAY-4040", label: "Makan Keluarga (Sharing)" },
-    { code: "BAY-9090", label: "Kado Siska (Locked)" },
-    { code: "BAY-7788", label: "Futsal Komunitas (Lunas)" },
-  ];
-
-  // Tambah 1 qty item untuk anggota
-  const addItem = (contributorId: string, item: BillItem) => {
-    const remaining = remainingStockForItem(item, contributorId);
-    if (remaining <= 0) return;
-    setMemberOrders((prev) => ({
-      ...prev,
-      [contributorId]: {
-        ...(prev[contributorId] || {}),
-        [item.id]: (prev[contributorId]?.[item.id] || 0) + 1,
-      },
-    }));
-  };
-
-  // Kurangi 1 qty item untuk anggota
-  const removeItem = (contributorId: string, itemId: string) => {
-    setMemberOrders((prev) => {
-      const curr = prev[contributorId]?.[itemId] || 0;
-      if (curr <= 1) {
-        const updated = { ...(prev[contributorId] || {}) };
-        delete updated[itemId];
-        return { ...prev, [contributorId]: updated };
-      }
-      return {
-        ...prev,
-        [contributorId]: { ...(prev[contributorId] || {}), [itemId]: curr - 1 },
-      };
-    });
-  };
-
-  // Simpan pesanan → update shareAmount ke backend
-  const handleApplyOrders = async (contributorId: string) => {
-    if (!currentBill) return;
-    const total = calcContributorTotal(contributorId);
+  const handleCopyText = async (id: string, text: string) => {
     try {
-      const res = await fetch(`/api/bills/${currentBill.id}/contributors/${contributorId}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ shareAmount: total }),
-      });
-      if (res.ok) {
-        onSelectBill(await res.json());
-        setActiveContributorId(null);
-      }
-    } catch {}
+      await navigator.clipboard?.writeText(text);
+      setCopiedStates((previous) => ({ ...previous, [id]: true }));
+      window.setTimeout(() => {
+        setCopiedStates((previous) => ({ ...previous, [id]: false }));
+      }, 1800);
+    } catch {
+      setErrorText("Browser tidak mengizinkan copy otomatis. Silakan salin manual.");
+    }
   };
 
-  // ── Bill actions ─────────────────────────────────────────
   const handleSearchBillByCode = async (code: string) => {
     if (!code.trim()) return;
+
     setLoadingCode(true);
     setErrorText("");
+    setSuccessJoinMsg("");
+
     try {
-      const res = await fetch(`/api/bills/${code.trim().toUpperCase()}`);
-      if (!res.ok) throw new Error((await res.json()).error || "Gagal membuka sesi.");
-      onSelectBill(await res.json());
+      const response = await fetch(`/api/bills/${code.trim().toUpperCase()}`);
+      if (!response.ok) {
+        throw new Error(await readApiError(response, "Sesi patungan tidak ditemukan."));
+      }
+
+      const foundBill = await readJson<Bill>(response);
+      onSelectBill(foundBill);
       onRefreshNotifications();
-    } catch (err: any) {
-      setErrorText(err.message);
+    } catch (error) {
+      setErrorText(getUnknownErrorMessage(error, "Gagal membuka sesi patungan."));
     } finally {
       setLoadingCode(false);
     }
   };
 
-  const handleJoinBill = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentBill || !newMemberName.trim()) return;
+  const joinBillByName = async (name: string) => {
+    if (!currentBill || !name.trim()) return;
+
+    setJoining(true);
     setErrorText("");
     setSuccessJoinMsg("");
+
     try {
-      const res = await fetch(`/api/bills/${currentBill.id}/join`, {
+      const response = await fetch(`/api/bills/${currentBill.id}/join`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newMemberName.trim() }),
+        body: JSON.stringify({ name: name.trim() }),
       });
-      if (!res.ok) throw new Error((await res.json()).error || "Gagal bergabung.");
-      onSelectBill(await res.json());
-      setSuccessJoinMsg(`Berhasil bergabung sebagai ${newMemberName}!`);
+
+      if (!response.ok) {
+        throw new Error(await readApiError(response, "Gagal bergabung ke patungan."));
+      }
+
+      const updatedBill = await readJson<Bill>(response);
+      onSelectBill(updatedBill);
+      setSuccessJoinMsg(`Berhasil bergabung sebagai ${name.trim()}.`);
       setNewMemberName("");
       onRefreshNotifications();
-      setTimeout(() => setSuccessJoinMsg(""), 4000);
-    } catch (er: any) {
-      setErrorText(er.message);
+      window.setTimeout(() => setSuccessJoinMsg(""), 3500);
+    } catch (error) {
+      setErrorText(getUnknownErrorMessage(error, "Gagal bergabung ke patungan."));
+    } finally {
+      setJoining(false);
+    }
+  };
+
+  const handleJoinBill = (event: FormEvent) => {
+    event.preventDefault();
+    void joinBillByName(newMemberName);
+  };
+
+  const handleJoinAsCurrentUser = () => {
+    if (!currentUser) return;
+    void joinBillByName(currentUser.name || currentUser.username);
+  };
+
+  const persistShareAmount = async (contributorId: string, rawAmount: string | number) => {
+    if (!currentBill || currentBill.status !== "SHARING") return;
+
+    const shareAmount = toSafeAmount(rawAmount);
+    setSavingShare((previous) => ({ ...previous, [contributorId]: true }));
+    setErrorText("");
+
+    try {
+      const response = await fetch(`/api/bills/${currentBill.id}/contributors/${contributorId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shareAmount }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await readApiError(response, "Gagal menyimpan nominal anggota."));
+      }
+
+      const updatedBill = await readJson<Bill>(response);
+      onSelectBill(updatedBill);
+      setShareInputs((previous) => {
+        const next = { ...previous };
+        delete next[contributorId];
+        return next;
+      });
+    } catch (error) {
+      setErrorText(getUnknownErrorMessage(error, "Gagal menyimpan nominal anggota."));
+    } finally {
+      setSavingShare((previous) => ({ ...previous, [contributorId]: false }));
+    }
+  };
+
+  const persistAllShareAmounts = async () => {
+    if (!currentBill) return;
+
+    for (const contributor of currentBill.contributors) {
+      const rawValue = shareInputs[contributor.id];
+      if (rawValue !== undefined && toSafeAmount(rawValue) !== contributor.shareAmount) {
+        await persistShareAmount(contributor.id, rawValue);
+      }
     }
   };
 
   const handleRemoveMember = async (contributorId: string) => {
     if (!currentBill) return;
+
+    setErrorText("");
+
     try {
       const response = await fetch(
         `/api/bills/${currentBill.id}/contributors/${contributorId}/remove`,
@@ -181,1277 +395,1093 @@ export default function CustomerWorkspace({
           method: "POST",
         },
       );
-      if (response.ok) {
-        const updated = await response.json();
-        onSelectBill(updated);
-        onRefreshNotifications();
+
+      if (!response.ok) {
+        throw new Error(await readApiError(response, "Gagal menghapus anggota."));
       }
-    } catch {
-      setErrorText("Gagal mencopot anggota.");
+
+      const updatedBill = await readJson<Bill>(response);
+      onSelectBill(updatedBill);
+      onRefreshNotifications();
+    } catch (error) {
+      setErrorText(getUnknownErrorMessage(error, "Gagal menghapus anggota."));
     }
   };
 
-  const handleAutoBalance = async (type: "equal" | "remainder") => {
+  const handleAutoBalance = async (type: AutoBalanceType) => {
     if (!currentBill) return;
+
+    setAutoBalancing(type);
     setErrorText("");
+
     try {
-      const res = await fetch(`/api/bills/${currentBill.id}/auto-balance`, {
+      const response = await fetch(`/api/bills/${currentBill.id}/auto-balance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type }),
       });
-      if (!res.ok) throw new Error((await res.json()).error);
-      onSelectBill(await res.json());
+
+      if (!response.ok) {
+        throw new Error(await readApiError(response, "Gagal menjalankan auto-balancing."));
+      }
+
+      const updatedBill = await readJson<Bill>(response);
+      setShareInputs({});
+      onSelectBill(updatedBill);
       onRefreshNotifications();
-    } catch (err: any) {
-      setErrorText(err.message);
+    } catch (error) {
+      setErrorText(getUnknownErrorMessage(error, "Gagal menjalankan auto-balancing."));
+    } finally {
+      setAutoBalancing(null);
     }
   };
 
   const handleLockBill = async () => {
-    if (!currentBill) return;
+    if (!currentBill || currentBill.contributors.length === 0 || !isBalanced) return;
+
+    setLockingBill(true);
     setErrorText("");
+
     try {
-      const res = await fetch(`/api/bills/${currentBill.id}/lock`, { method: "POST" });
-      if (!res.ok) throw new Error((await res.json()).error);
-      onSelectBill(await res.json());
+      await persistAllShareAmounts();
+
+      const response = await fetch(`/api/bills/${currentBill.id}/lock`, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readApiError(response, "Gagal mengunci tagihan."));
+      }
+
+      const updatedBill = await readJson<Bill>(response);
+      onSelectBill(updatedBill);
       onRefreshNotifications();
-    } catch (err: any) {
-      setErrorText(err.message);
+    } catch (error) {
+      setErrorText(getUnknownErrorMessage(error, "Gagal mengunci tagihan."));
+    } finally {
+      setLockingBill(false);
     }
   };
 
-  // WEBHOOK GATEWAY POST TRIGGER (SIMULATED INDIVIDUAL TRANSACTION)
-  const handleTriggerWebhookPayment = async (
-    contributorId: string,
-    name: string,
-    shareAmount: number,
-  ) => {
+  const handleCreateMidtransPayment = async (contributorId: string) => {
     if (!currentBill) return;
-    setSimulatings((prev) => ({ ...prev, [contributorId]: true }));
 
-    // Default system method to QRIS if not selected
-    const chosenMethod = selectedGateway[contributorId] || "QRIS Bank Mandiri";
+    const paymentChannel = selectedChannel[contributorId] || "bca_va";
+    const channelLabel = getChannelInfo(paymentChannel).label;
 
-    // Formulate realistic transaction payload
-    const payload = {
-      billId: currentBill.id,
-      contributorId,
-      amount: shareAmount,
-      paymentMethod: chosenMethod,
-      secureToken: "MOCK_SPLITBAY_SECURE_TOKEN",
-    };
-
-    // Output visual log to sandbox console
-    const newLog = `[${new Date().toLocaleTimeString()}] Sending WebHook POST /api/webhook/payment -> Name: ${name}, Rp ${shareAmount.toLocaleString("id-ID")} via ${chosenMethod}...`;
-    setWebhookLogs((prev) => [newLog, ...prev]);
+    setCreatingPayment((previous) => ({ ...previous, [contributorId]: true }));
+    setErrorText("");
+    setPaymentLogs((previous) => [
+      `[${new Date().toLocaleTimeString("id-ID")}] Meminta credential Midtrans Core API untuk ${contributorId} via ${channelLabel}.`,
+      ...previous,
+    ]);
 
     try {
-      // Simulate physical payment processing delay (1.2 seconds)
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-
-      const response = await fetch("/api/webhook/payment", {
+      const response = await fetch("/api/payments/midtrans/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          billId: currentBill.id,
+          contributorId,
+          paymentChannel,
+        }),
       });
 
-      const resData = await response.json();
-
-      if (response.ok) {
-        const successLog = `[${new Date().toLocaleTimeString()}] HTTP 200 SUCCESS via Gateway! Ref ID: ${resData.transactionId || "N/A"}. Bill status: ${resData.billStatus}`;
-        setWebhookLogs((prev) => [successLog, ...prev]);
-
-        // Refresh component state
-        refreshBillData(currentBill.id);
-        onRefreshNotifications();
-      } else {
-        const failLog = `[${new Date().toLocaleTimeString()}] Webhook Error: ${resData.error || "Gagal verifikasi pembayaran."}`;
-        setWebhookLogs((prev) => [failLog, ...prev]);
-        setErrorText(resData.error || "Kalkulasi pembayaran gagal diverifikasi.");
+      if (!response.ok) {
+        throw new Error(await readApiError(response, "Gagal membuat transaksi Midtrans."));
       }
-    } catch (err: any) {
-      const errorLog = `[${new Date().toLocaleTimeString()}] Network Connection timeout to Gateway Webhook.`;
-      setWebhookLogs((prev) => [errorLog, ...prev]);
+
+      const payload = await readJson<MidtransCreateResponse>(response);
+      const instruction = payload.instruction;
+
+      if (!instruction?.orderId) {
+        throw new Error("Midtrans tidak mengembalikan order ID pembayaran.");
+      }
+
+      setPaymentInstructions((previous) => ({
+        ...previous,
+        [contributorId]: {
+          ...instruction,
+          createdAt: new Date().toISOString(),
+        },
+      }));
+
+      const hasCredential =
+        Boolean(instruction.vaNumbers?.length) ||
+        Boolean(instruction.billerCode || instruction.billKey || instruction.paymentCode) ||
+        Boolean(instruction.qrImageUrl || instruction.qrString || instruction.redirectUrl);
+
+      setPaymentLogs((previous) => [
+        `[${new Date().toLocaleTimeString("id-ID")}] Credential Midtrans dibuat. Order ID: ${instruction.orderId}. ${hasCredential ? "Instruksi bayar tampil di invoice." : "Credential detail belum dikembalikan Midtrans."}`,
+        ...previous,
+      ]);
+
+      await refreshBillData(currentBill.id);
+      onRefreshNotifications();
+    } catch (error) {
+      const message = getUnknownErrorMessage(error, "Gagal membuat transaksi Midtrans.");
+      setPaymentLogs((previous) => [
+        `[${new Date().toLocaleTimeString("id-ID")}] Midtrans create error: ${message}`,
+        ...previous,
+      ]);
+      setErrorText(message);
     } finally {
-      setSimulatings((prev) => ({ ...prev, [contributorId]: false }));
+      setCreatingPayment((previous) => ({ ...previous, [contributorId]: false }));
     }
   };
 
-  // Helper values
-  const currentAssignedTotal =
-    currentBill?.contributors.reduce((sum, c) => sum + c.shareAmount, 0) || 0;
-  const isBalanced = currentBill ? currentAssignedTotal === currentBill.totalAmount : false;
-  const balanceDifference = currentBill ? currentBill.totalAmount - currentAssignedTotal : 0;
+  const handleCheckMidtransStatus = async (contributorId: string) => {
+    if (!currentBill) return;
 
-  return (
-    <div className="space-y-6" id="workspace-root-panel">
-      {/* Search & Code Insertion View */}
-      {!currentBill ? (
-        <div className="max-w-xl mx-auto space-y-8 py-8 animate-fade-in" id="join-portal-gate">
-          <div className="text-center space-y-3">
-            <div className="mx-auto w-16 h-16 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl flex items-center justify-center text-emerald-700 shadow-xs">
-              <Key className="w-8 h-8" />
+    const knownOrderId =
+      paymentInstructions[contributorId]?.orderId ||
+      currentBill.contributors.find((contributor) => contributor.id === contributorId)
+        ?.transactionId;
+
+    setCheckingPayment((previous) => ({ ...previous, [contributorId]: true }));
+    setErrorText("");
+
+    try {
+      const response = await fetch("/api/payments/midtrans/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          billId: currentBill.id,
+          contributorId,
+          orderId: knownOrderId,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(await readApiError(response, "Gagal mengecek status Midtrans."));
+      }
+
+      const payload = await readJson<{
+        transactionStatus?: string;
+        billStatus?: string;
+        message?: string;
+      }>(response);
+      setPaymentLogs((previous) => [
+        `[${new Date().toLocaleTimeString("id-ID")}] Status Midtrans: ${payload.transactionStatus || "unknown"}. ${payload.message || ""}`,
+        ...previous,
+      ]);
+
+      await refreshBillData(currentBill.id);
+      onRefreshNotifications();
+    } catch (error) {
+      const message = getUnknownErrorMessage(error, "Gagal mengecek status Midtrans.");
+      setPaymentLogs((previous) => [
+        `[${new Date().toLocaleTimeString("id-ID")}] Status check error: ${message}`,
+        ...previous,
+      ]);
+      setErrorText(message);
+    } finally {
+      setCheckingPayment((previous) => ({ ...previous, [contributorId]: false }));
+    }
+  };
+
+  const renderSearchPortal = () => (
+    <div className="mx-auto max-w-xl animate-fade-in space-y-8 py-8" id="join-portal-gate">
+      <div className="space-y-3 text-center">
+        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-700 shadow-sm">
+          <Key className="h-8 w-8" />
+        </div>
+        <h1 className="text-2xl font-black tracking-tight text-slate-900">
+          Gabung Sesi Patungan SplitPay
+        </h1>
+        <p className="mx-auto max-w-sm text-sm leading-relaxed text-slate-500">
+          Masukkan kode patungan yang diberikan admin atau kasir. User biasa tetap dapat membuka
+          ruang ini.
+        </p>
+      </div>
+
+      <div className="space-y-6 rounded-3xl border border-slate-200 bg-white p-8 shadow-xl">
+        <div className="space-y-2">
+          <label
+            htmlFor="split-code-input"
+            className="block text-[11px] font-bold uppercase tracking-wider text-slate-400"
+          >
+            Kode Patungan
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="split-code-input"
+              type="text"
+              placeholder="Contoh: BAY-4040"
+              value={searchCode}
+              onChange={(event) => setSearchCode(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void handleSearchBillByCode(searchCode);
+                }
+              }}
+              className="flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-4 text-center font-mono text-lg font-bold uppercase tracking-widest text-emerald-900 transition-all focus:border-emerald-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+            <button
+              type="button"
+              onClick={() => void handleSearchBillByCode(searchCode)}
+              disabled={loadingCode}
+              className="flex items-center justify-center rounded-2xl bg-emerald-600 px-6 font-bold text-white shadow-lg shadow-emerald-600/10 transition-all hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {loadingCode ? (
+                <RefreshCw className="h-5 w-5 animate-spin" />
+              ) : (
+                <ChevronRight className="h-6 w-6" />
+              )}
+            </button>
+          </div>
+        </div>
+
+        {errorText && (
+          <div className="flex items-center gap-2 rounded-xl border border-red-100 bg-red-50 p-4 text-xs text-red-700">
+            <AlertCircle className="h-4 w-4 shrink-0 text-red-500" />
+            <span>{errorText}</span>
+          </div>
+        )}
+
+        <div className="space-y-3 border-t border-slate-100 pt-6">
+          <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+            Sesi demo cepat
+          </span>
+          <div className="grid grid-cols-1 gap-2.5">
+            {SAMPLE_CODES.map((sample) => (
+              <button
+                key={sample.code}
+                type="button"
+                onClick={() => {
+                  setSearchCode(sample.code);
+                  void handleSearchBillByCode(sample.code);
+                }}
+                className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-left text-xs text-slate-700 transition-all hover:border-emerald-300 hover:bg-emerald-50/50"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="rounded-md border border-slate-200 bg-white px-2 py-1 font-mono font-bold text-emerald-800 shadow-sm">
+                    {sample.code}
+                  </span>
+                  <span className="font-medium">{sample.label}</span>
+                </div>
+                <ChevronRight className="h-4 w-4 text-slate-400" />
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderBalanceMeter = () => {
+    if (!currentBill) return null;
+
+    const progressWidth =
+      currentBill.totalAmount > 0
+        ? Math.min(100, (currentAssignedTotal / currentBill.totalAmount) * 100)
+        : 0;
+
+    return (
+      <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-700">
+            Meter Keseimbangan Patungan
+          </span>
+          <span className="font-mono text-xs text-slate-500">
+            {formatCurrency(currentAssignedTotal)} / {formatCurrency(currentBill.totalAmount)}
+          </span>
+        </div>
+
+        <div className="flex h-3 w-full overflow-hidden rounded-full bg-slate-100">
+          {currentAssignedTotal > 0 && (
+            <div
+              className={`h-full transition-all duration-300 ${
+                balanceDifference > 0
+                  ? "bg-amber-500"
+                  : balanceDifference < 0
+                    ? "bg-red-500"
+                    : "bg-emerald-500"
+              }`}
+              style={{ width: `${progressWidth}%` }}
+            />
+          )}
+        </div>
+
+        {currentBill.status === "SHARING" ? (
+          <div>
+            {currentAssignedTotal === 0 ? (
+              <div className="flex items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                <Users className="h-4 w-4 shrink-0 text-slate-400" />
+                <span>
+                  Belum ada nominal kontribusi. Tambahkan anggota dan atur share masing-masing.
+                </span>
+              </div>
+            ) : balanceDifference > 0 ? (
+              <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50/75 p-3.5 text-xs text-amber-900">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <div>
+                  <span className="block font-bold">Pembagian masih kurang</span>
+                  <span className="text-slate-700">
+                    Masih ada sisa <strong>{formatCurrency(balanceDifference)}</strong> yang belum
+                    dialokasikan.
+                  </span>
+                </div>
+              </div>
+            ) : balanceDifference < 0 ? (
+              <div className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50 p-3.5 text-xs text-red-900">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-500" />
+                <div>
+                  <span className="block font-bold">Pembagian melebihi total tagihan</span>
+                  <span className="text-slate-700">
+                    Alokasi berlebih sebesar{" "}
+                    <strong>{formatCurrency(Math.abs(balanceDifference))}</strong>.
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-start gap-2.5 rounded-xl border border-emerald-500/20 bg-emerald-50 p-3.5 text-xs text-emerald-900 shadow-sm">
+                <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-600" />
+                <div className="flex-1">
+                  <span className="block font-bold text-emerald-800">
+                    Pembagian pas dan siap dikunci
+                  </span>
+                  <span className="mt-0.5 block font-medium text-slate-700">
+                    Setelah dikunci, nominal anggota tidak dapat diubah dan masing-masing invoice
+                    siap dibayar melalui Midtrans Sandbox.
+                  </span>
+                  {canManageBill ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleLockBill()}
+                      disabled={lockingBill}
+                      className="mt-3.5 inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-5 py-2.5 text-xs font-bold text-white shadow-md shadow-emerald-600/15 transition-all hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {lockingBill ? (
+                        <RefreshCw className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <ShieldCheck className="h-4 w-4" />
+                      )}
+                      Kunci dan Terbitkan Invoice
+                    </button>
+                  ) : (
+                    <div className="mt-3.5 rounded-lg border border-emerald-100 bg-white p-2.5 text-[10px] font-medium text-emerald-800">
+                      Pembagian sudah pas. Menunggu admin mengunci invoice sebelum pembayaran
+                      Midtrans dibuka.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="flex items-center justify-between rounded-xl bg-emerald-950 p-3.5 text-xs text-emerald-100">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-emerald-400" />
+              <span>
+                Tagihan sudah dikunci menjadi {currentBill.contributors.length} invoice parsial.
+              </span>
             </div>
-            <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-              Gabung Sesi Patungan SplitBay
-            </h1>
-            <p className="text-sm text-slate-500 max-w-sm mx-auto leading-relaxed">
-              Masukkan kode patungan unik (4 angka di belakang BAY) yang diberikan oleh Kasir atau
-              temanmu.
+            {currentBill.status === "COMPLETED" && (
+              <span className="rounded bg-emerald-500 px-2 py-0.5 text-[9px] font-black uppercase text-white">
+                Lunas
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderMembersCard = () => {
+    if (!currentBill) return null;
+
+    const userAlreadyJoined = currentUser
+      ? currentBill.contributors.some(
+          (contributor) =>
+            normalizeName(contributor.name) === normalizeName(currentUser.name) ||
+            normalizeName(contributor.name) === normalizeName(currentUser.username),
+        )
+      : false;
+
+    return (
+      <div className="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-col justify-between gap-4 border-b border-slate-100 pb-4 sm:flex-row sm:items-center">
+          <div>
+            <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+              <Users className="h-4 w-4 text-emerald-600" />
+              Anggota Tim Patungan ({currentBill.contributors.length} orang)
+            </h3>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Admin mengatur tagihan. User biasa dapat join dan membayar invoice parsialnya.
             </p>
           </div>
 
-          <div className="bg-white rounded-3xl border border-slate-200 shadow-xl p-8 space-y-6">
-            <div className="space-y-2">
-              <label className="text-[11px] font-bold text-slate-400 block uppercase tracking-wider">
-                KODE PATUNGAN (SPLIT CODE)
-              </label>
-              <div className="flex gap-2">
+          {currentBill.status === "SHARING" && canManageBill && (
+            <div className="flex shrink-0 flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() => void handleAutoBalance("equal")}
+                disabled={autoBalancing !== null}
+                className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-700 transition-all hover:border-emerald-300 hover:bg-emerald-50 disabled:opacity-50"
+              >
+                {autoBalancing === "equal" ? "Memproses..." : "⚡ Bagi Rata"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleAutoBalance("remainder")}
+                disabled={balanceDifference <= 0 || autoBalancing !== null}
+                className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-bold text-slate-700 transition-all hover:border-emerald-300 hover:bg-emerald-50 disabled:opacity-35"
+              >
+                {autoBalancing === "remainder" ? "Memproses..." : "⚖️ Bagi Sisa"}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {errorText && (
+          <div className="rounded-lg border border-red-100 bg-red-50 p-3 text-xs text-red-700">
+            {errorText}
+          </div>
+        )}
+        {successJoinMsg && (
+          <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-3 text-xs text-emerald-800">
+            {successJoinMsg}
+          </div>
+        )}
+
+        {currentBill.status === "SHARING" && (
+          <div className="space-y-3">
+            {currentUser && !userAlreadyJoined && (
+              <button
+                type="button"
+                onClick={handleJoinAsCurrentUser}
+                disabled={joining}
+                className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-emerald-300 bg-emerald-50 py-2 text-xs font-bold text-emerald-800 transition-all hover:bg-emerald-100 disabled:opacity-60"
+              >
+                ⚡ Gabung sebagai{" "}
+                <span className="font-extrabold underline">{currentUser.name}</span>
+              </button>
+            )}
+
+            <form
+              onSubmit={handleJoinBill}
+              className="flex gap-2 rounded-xl border border-slate-200 bg-slate-50 p-3 shadow-inner"
+            >
+              <div className="relative flex-1">
+                <span className="absolute left-3.5 top-2.5 text-xs font-bold text-emerald-600">
+                  @
+                </span>
                 <input
                   type="text"
-                  placeholder="Contoh: BAY-4040"
-                  value={searchCode}
-                  onChange={(e) => setSearchCode(e.target.value)}
-                  className="flex-1 px-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl text-lg font-mono font-bold uppercase tracking-widest text-emerald-850 focus:bg-white focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 focus:outline-hidden transition-all text-center"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleSearchBillByCode(searchCode);
-                    }
-                  }}
+                  placeholder="Masukkan nama pembayar, misal: Cici, Deni"
+                  value={newMemberName}
+                  onChange={(event) => setNewMemberName(event.target.value)}
+                  className="w-full bg-transparent py-1.5 pl-8 pr-3 text-xs text-slate-800 focus:outline-none"
                 />
-                <button
-                  onClick={() => handleSearchBillByCode(searchCode)}
-                  disabled={loadingCode}
-                  className="px-6 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-2xl shadow-lg shadow-emerald-600/10 transition-all flex items-center justify-center cursor-pointer"
-                >
-                  {loadingCode ? (
-                    <RefreshCw className="w-5 h-5 animate-spin" />
-                  ) : (
-                    <ChevronRight className="w-6 h-6" />
-                  )}
-                </button>
               </div>
+              <button
+                type="submit"
+                disabled={joining || !newMemberName.trim()}
+                className="flex items-center gap-1 rounded-lg bg-emerald-600 px-4 py-1.5 text-xs font-bold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {joining ? (
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <UserPlus className="h-3.5 w-3.5" />
+                )}
+                Gabung
+              </button>
+            </form>
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {currentBill.contributors.length === 0 ? (
+            <div className="py-8 text-center text-xs font-light text-slate-400">
+              Belum ada anggota. Tambahkan nama pembayar untuk memulai pembagian.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {currentBill.contributors.map((contributor) => {
+                const amountInput = getContributorAmountInput(
+                  contributor.id,
+                  contributor.shareAmount,
+                );
+                return (
+                  <div
+                    key={contributor.id}
+                    className="flex flex-col justify-between gap-3 rounded-xl bg-white p-2 py-3 transition-colors hover:bg-slate-50/50 md:flex-row md:items-center"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-8 w-8 items-center justify-center rounded-full border border-emerald-200 bg-emerald-900/10 text-xs font-bold text-emerald-800">
+                        {contributor.name.charAt(0).toUpperCase()}
+                      </div>
+                      <div>
+                        <span className="block text-xs font-semibold text-slate-800">
+                          {contributor.name}
+                        </span>
+                        <span className="block font-mono text-[10px] text-slate-400">
+                          ID: {contributor.id}
+                        </span>
+                      </div>
+                    </div>
+
+                    {currentBill.status === "SHARING" && canManageBill ? (
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[10px] font-semibold text-slate-500">
+                          Rp
+                        </span>
+                        <input
+                          type="number"
+                          value={amountInput}
+                          onChange={(event) =>
+                            setShareInputs((previous) => ({
+                              ...previous,
+                              [contributor.id]: event.target.value,
+                            }))
+                          }
+                          onBlur={(event) =>
+                            void persistShareAmount(contributor.id, event.target.value)
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              void persistShareAmount(contributor.id, amountInput);
+                            }
+                          }}
+                          className="w-28 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-right font-mono text-xs font-bold text-slate-800 focus:border-emerald-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                          min="0"
+                          placeholder="0"
+                        />
+                        {savingShare[contributor.id] && (
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin text-slate-400" />
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => void handleRemoveMember(contributor.id)}
+                          className="rounded-sm p-1 text-slate-400 hover:text-red-500"
+                          title="Hapus dari daftar patungan"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-xs font-bold text-slate-800">
+                          {formatCurrency(contributor.shareAmount)}
+                        </span>
+                        {contributor.paymentStatus === "PAID" ? (
+                          <span className="rounded-full border border-emerald-200 bg-emerald-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-800">
+                            Lunas
+                          </span>
+                        ) : contributor.paymentStatus === "FAILED" ? (
+                          <span className="rounded-full border border-red-200 bg-red-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-red-700">
+                            Gagal
+                          </span>
+                        ) : (
+                          <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-amber-800">
+                            Menunggu
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderCopyButton = (copyKey: string, text: string) => (
+    <button
+      type="button"
+      onClick={() => void handleCopyText(copyKey, compactCredential(text))}
+      className="flex shrink-0 items-center gap-1 rounded border border-slate-200 bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-600 transition-colors hover:bg-emerald-50 hover:text-emerald-700"
+    >
+      {copiedStates[copyKey] ? (
+        <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+      ) : (
+        <Copy className="h-3 w-3" />
+      )}
+      {copiedStates[copyKey] ? "Copied" : "Copy"}
+    </button>
+  );
+
+  const renderPaymentField = (args: {
+    copyKey: string;
+    label: string;
+    value?: string;
+    helper?: string;
+  }) => {
+    if (!args.value) return null;
+
+    return (
+      <div className="rounded-lg border border-slate-200 bg-white p-2.5 shadow-sm">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <span className="block text-[9px] font-bold uppercase tracking-wider text-slate-400">
+              {args.label}
+            </span>
+            <span className="mt-1 block break-all font-mono text-xs font-extrabold tracking-wide text-slate-900">
+              {groupPaymentCode(args.value)}
+            </span>
+          </div>
+          {renderCopyButton(args.copyKey, args.value)}
+        </div>
+        {args.helper && (
+          <p className="mt-2 text-[9px] leading-relaxed text-slate-500">{args.helper}</p>
+        )}
+      </div>
+    );
+  };
+
+  const renderMidtransInstruction = (contributorId: string, channel: MidtransChannel) => {
+    const channelInfo = getChannelInfo(channel);
+    const instruction = paymentInstructions[contributorId];
+    const showQrPreview = Boolean(instruction?.qrImageUrl || instruction?.qrString);
+
+    return (
+      <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-3 text-left">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
+            Midtrans Core API Credential
+          </span>
+          <span className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[8px] font-bold uppercase text-amber-800">
+            Pending sampai settlement
+          </span>
+        </div>
+
+        <p className="text-[10px] leading-relaxed text-slate-500">{channelInfo.description}</p>
+
+        {!instruction && (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-white p-2.5 text-[10px] leading-relaxed text-slate-500">
+            Klik <strong>Buat Transaksi</strong> agar backend meminta credential asli dari Midtrans
+            Sandbox. Setelah itu VA number, Mandiri Bill Payment, atau QR/action akan tampil
+            langsung di sini.
+          </div>
+        )}
+
+        {instruction && (
+          <div className="space-y-3 rounded-lg border border-emerald-100 bg-white p-2.5 text-[10px] text-slate-600 shadow-sm">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <span className="block text-[9px] font-bold uppercase text-slate-400">
+                  Order ID
+                </span>
+                <span className="block break-all font-mono font-bold text-slate-800">
+                  {instruction.orderId}
+                </span>
+                {instruction.expiresAt && (
+                  <span className="mt-1 block text-[9px] text-slate-400">
+                    Batas bayar: {new Date(instruction.expiresAt).toLocaleString("id-ID")}
+                  </span>
+                )}
+              </div>
+              {renderCopyButton(`${contributorId}-order`, instruction.orderId)}
             </div>
 
-            {errorText && (
-              <div className="p-4 bg-red-50 text-red-700 rounded-xl border border-red-100 text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
-                <span>{errorText}</span>
+            {instruction.vaNumbers?.map((entry, index) =>
+              renderPaymentField({
+                copyKey: `${contributorId}-va-${index}`,
+                label: `${entry.bank} Virtual Account`,
+                value: entry.vaNumber,
+                helper:
+                  "Salin nomor VA ini ke Midtrans Payment Simulator sesuai bank yang dipilih.",
+              }),
+            )}
+
+            {(instruction.billerCode || instruction.billKey) && (
+              <div className="space-y-2 rounded-lg border border-indigo-100 bg-indigo-50 p-2.5">
+                <div className="flex items-center justify-between gap-2 text-[9px] font-bold uppercase tracking-wider text-indigo-900">
+                  <span>Mandiri Bill Payment</span>
+                  <span className="rounded bg-white px-1.5 py-0.5 text-[8px] text-indigo-700">
+                    Simulator Ready
+                  </span>
+                </div>
+                {renderPaymentField({
+                  copyKey: `${contributorId}-mandiri-biller`,
+                  label: "Company Code / Biller Code",
+                  value: instruction.billerCode,
+                  helper:
+                    "Di simulator Mandiri, field ini dapat muncul sebagai Company Code atau Biller Code.",
+                })}
+                {renderPaymentField({
+                  copyKey: `${contributorId}-mandiri-billkey`,
+                  label: "Bill Key / Payment Code",
+                  value: instruction.billKey || instruction.paymentCode,
+                  helper:
+                    "Masukkan nilai ini pada field Bill Key atau nomor pembayaran Mandiri di simulator.",
+                })}
               </div>
             )}
 
-            {/* Simulated Live Connections to Test Right Away */}
-            <div className="border-t border-slate-100 pt-6 space-y-3">
-              <span className="text-[11px] font-bold text-slate-400 block uppercase tracking-wider">
-                ATAU PILIH SESI SIMULASI KASIR AKTIF:
-              </span>
-              <div className="grid grid-cols-1 gap-2.5">
-                {sampleCodes.map((sc, idx) => (
+            {!instruction.vaNumbers?.length &&
+              instruction.paymentCode &&
+              !instruction.billKey &&
+              renderPaymentField({
+                copyKey: `${contributorId}-payment-code`,
+                label: "Payment Code",
+                value: instruction.paymentCode,
+                helper: "Gunakan kode pembayaran ini pada simulator metode terkait.",
+              })}
+
+            {showQrPreview && (
+              <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3 text-center">
+                <div className="flex items-center justify-center gap-1 text-[9px] font-bold uppercase tracking-wider text-slate-500">
+                  <QrCode className="h-3.5 w-3.5" />
+                  QR Pembayaran
+                </div>
+                {instruction.qrImageUrl ? (
+                  <img
+                    src={instruction.qrImageUrl}
+                    alt={`QR pembayaran ${channelInfo.label}`}
+                    className="mx-auto h-36 w-36 rounded-lg border border-slate-200 bg-white object-contain p-2 shadow-sm"
+                  />
+                ) : (
+                  <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3 font-mono text-[9px] leading-relaxed text-slate-500">
+                    QR string tersedia, tetapi Midtrans tidak mengembalikan URL gambar QR. Gunakan
+                    tombol action di bawah jika tersedia.
+                  </div>
+                )}
+                {instruction.qrString && (
                   <button
-                    key={idx}
-                    onClick={() => {
-                      setSearchCode(sc.code);
-                      handleSearchBillByCode(sc.code);
-                    }}
                     type="button"
-                    className="w-full flex items-center justify-between p-3.5 bg-slate-50 hover:bg-emerald-50/50 border border-slate-200 hover:border-emerald-300 rounded-xl transition-all text-left text-xs text-slate-700 cursor-pointer"
+                    onClick={() =>
+                      void handleCopyText(`${contributorId}-qr-string`, instruction.qrString || "")
+                    }
+                    className="inline-flex items-center justify-center gap-1 rounded border border-slate-200 bg-white px-2 py-1 text-[9px] font-bold text-slate-600 hover:bg-emerald-50 hover:text-emerald-700"
                   >
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono bg-white border border-slate-200 text-emerald-800 font-bold px-2 py-1 rounded-md shadow-2xs">
-                        {sc.code}
-                      </span>
-                      <span className="font-medium text-slate-700">{sc.label}</span>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-slate-400" />
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : (
-        /* Workspace when Active Bill is loaded */
-        <div className="space-y-6 animate-fade-in" id="active-group-workspace">
-          {/* Back Button and Info Header */}
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white border border-slate-200 shadow-sm rounded-2xl p-5">
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => {
-                  onSelectBill(null);
-                  setErrorText("");
-                  setSuccessJoinMsg("");
-                }}
-                className="p-2 hover:bg-slate-50 rounded-xl transition-all border border-slate-200 cursor-pointer"
-                title="Kembali ke gerbang join"
-              >
-                <ArrowLeft className="w-4 h-4 text-slate-600" />
-              </button>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-mono font-bold text-emerald-800 bg-emerald-50 border border-emerald-100 px-2.5 py-1 rounded-md shadow-3xs uppercase">
-                    KODE: {currentBill.code}
-                  </span>
-
-                  {currentBill.status === "SHARING" && (
-                    <span className="text-[10px] font-bold bg-amber-50 text-amber-800 px-2 py-0.5 rounded-full border border-amber-200">
-                      Membagi Tagihan
-                    </span>
-                  )}
-                  {currentBill.status === "LOCKED" && (
-                    <span className="text-[10px] font-bold bg-indigo-50 text-indigo-800 px-2 py-0.5 rounded-full border border-indigo-200">
-                      Invoice Dikunci
-                    </span>
-                  )}
-                  {currentBill.status === "COMPLETED" && (
-                    <span className="text-[10px] font-bold bg-emerald-500 text-white px-2 py-0.5 rounded-full border border-emerald-600">
-                      Lunas Webhook
-                    </span>
-                  )}
-                </div>
-                <h2 className="text-xl font-black text-slate-900 mt-1">{currentBill.title}</h2>
-                <p className="text-xs text-slate-500 mt-0.5">{currentBill.description}</p>
-              </div>
-            </div>
-
-            <div className="text-left md:text-right shrink-0">
-              <span className="text-[11px] text-slate-400 font-bold uppercase tracking-wider block">
-                TOTAL TAGIHAN KASIR
-              </span>
-              <span className="text-2xl font-black text-emerald-800 font-mono">
-                Rp {currentBill.totalAmount.toLocaleString("id-ID")}
-              </span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Left and Mid Grid: Configuration state */}
-            <div className="lg:col-span-2 space-y-6">
-              {/* Alert & Validation progress bar */}
-              <div className="bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    Meter Keseimbangan Patungan
-                  </span>
-                  <span className="text-xs font-mono text-slate-500">
-                    Rp {currentAssignedTotal.toLocaleString("id-ID")} / Rp{" "}
-                    {currentBill.totalAmount.toLocaleString("id-ID")}
-                  </span>
-                </div>
-
-                {/* Progress bar */}
-                <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden flex">
-                  {currentAssignedTotal > 0 && (
-                    <div
-                      className={`h-full transition-all duration-300 ${
-                        currentAssignedTotal < currentBill.totalAmount
-                          ? "bg-amber-500"
-                          : currentAssignedTotal > currentBill.totalAmount
-                            ? "bg-red-500"
-                            : "bg-emerald-500"
-                      }`}
-                      style={{
-                        width: `${Math.min(100, (currentAssignedTotal / currentBill.totalAmount) * 100)}%`,
-                      }}
-                    />
-                  )}
-                </div>
-
-                {/* Indonesian Warning Alerts */}
-                {currentBill.status === "SHARING" ? (
-                  <div className="pt-2">
-                    {currentAssignedTotal === 0 ? (
-                      <div className="p-3 bg-slate-50 border border-slate-200 text-slate-600 rounded-xl text-xs flex items-center gap-2">
-                        <Users className="w-4 h-4 text-slate-400 shrink-0" />
-                        <span>
-                          Belum ada pembagian nominal. Silakan tambahkan anggota tim & atur tagihan
-                          di bawah.
-                        </span>
-                      </div>
-                    ) : balanceDifference > 0 ? (
-                      <div className="p-3.5 bg-amber-50/75 border border-amber-200 text-amber-900 rounded-xl text-xs flex items-start gap-2.5">
-                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-                        <div>
-                          <span className="font-bold block">🚨 Pembayaran masih kurang</span>
-                          <span className="text-slate-700">
-                            Masih ada sisa{" "}
-                            <strong>Rp {balanceDifference.toLocaleString("id-ID")}</strong> yang
-                            belum dialokasikan ke siapapun. Gunakan tombol{" "}
-                            <strong className="text-emerald-700">Auto-Balancing</strong> di samping
-                            untuk membagi rata.
-                          </span>
-                        </div>
-                      </div>
-                    ) : balanceDifference < 0 ? (
-                      <div className="p-3.5 bg-red-50/70 border border-red-200 text-red-900 rounded-xl text-xs flex items-start gap-2.5">
-                        <AlertCircle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
-                        <div>
-                          <span className="font-bold block">
-                            🚨 Pembayaran melebihi total harga
-                          </span>
-                          <span className="text-slate-700">
-                            Total alokasi berlebih sebesar{" "}
-                            <strong>
-                              Rp {Math.abs(balanceDifference).toLocaleString("id-ID")}
-                            </strong>{" "}
-                            dari tagihan Kasir. Harap kurangi kontribusi individu.
-                          </span>
-                        </div>
-                      </div>
+                    {copiedStates[`${contributorId}-qr-string`] ? (
+                      <CheckCircle2 className="h-3 w-3 text-emerald-600" />
                     ) : (
-                      <div className="p-3.5 bg-emerald-50 border border-emerald-500/20 text-emerald-900 rounded-xl text-xs flex items-start gap-2.5 shadow-2xs">
-                        <CheckCircle2 className="w-4.5 h-4.5 text-emerald-600 shrink-0" />
-                        <div className="flex-1">
-                          <span className="font-bold block text-emerald-800">
-                            🎉 Pembayaran Pas & Seimbang!
-                          </span>
-                          <span className="text-slate-700 font-medium block mt-0.5">
-                            Total tagihan terkumpul pas Rp{" "}
-                            {currentBill.totalAmount.toLocaleString("id-ID")}. Silakan kunci
-                            konfirmasi untuk memecah menjadi invoice parsial.
-                          </span>
-                          <button
-                            onClick={handleLockBill}
-                            className="mt-3.5 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl transition-all shadow-md shadow-emerald-600/15 text-xs inline-flex items-center gap-2 cursor-pointer"
-                          >
-                            <ShieldCheck className="w-4 h-4" />
-                            Kunci & Terbitkan Invoice Sekarang
-                          </button>
-                        </div>
-                      </div>
+                      <Copy className="h-3 w-3" />
                     )}
+                    Copy QR URL/String
+                  </button>
+                )}
+              </div>
+            )}
+
+            {instruction.redirectUrl && (
+              <a
+                href={instruction.redirectUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-3 py-2 text-[10px] font-bold text-white transition-colors hover:bg-slate-800"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Buka Deeplink / Halaman Pembayaran
+              </a>
+            )}
+
+            {isQrLikeChannel(channel) && !showQrPreview && !instruction.redirectUrl && (
+              <div className="rounded-lg border border-amber-100 bg-amber-50 p-2 text-[9.5px] leading-relaxed text-amber-900">
+                Transaksi berhasil dibuat, tetapi Midtrans tidak mengembalikan QR/action yang bisa
+                dirender langsung. Cek detail response di terminal backend atau gunakan metode VA
+                untuk simulasi paling stabil.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderInvoiceCard = () => {
+    if (!currentBill || (currentBill.status !== "LOCKED" && currentBill.status !== "COMPLETED"))
+      return null;
+
+    return (
+      <div
+        className="animate-fade-in space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+        id="invoice-payment-sandbox"
+      >
+        <div>
+          <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+            <CreditCard className="h-4 w-4 text-emerald-600" />
+            Invoice Parsial dan Pembayaran Midtrans
+          </h3>
+          <p className="mt-0.5 text-xs text-slate-500">
+            Tombol Buat Transaksi meminta credential asli dari Midtrans Core API. VA number, Mandiri
+            Bill Payment, atau QR/action akan tampil langsung pada invoice. Status lunas tetap hanya
+            diproses melalui webhook Midtrans valid atau Get Status API.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {currentBill.contributors.map((contributor) => {
+            const channel = selectedChannel[contributor.id] || "bca_va";
+            const shareAmount = contributor.shareAmount;
+            const isPaid = contributor.paymentStatus === "PAID";
+            const isFailed = contributor.paymentStatus === "FAILED";
+            const instruction = paymentInstructions[contributor.id];
+            const currentOrderId = instruction?.orderId || contributor.transactionId;
+
+            return (
+              <div
+                key={contributor.id}
+                className={`relative overflow-hidden rounded-2xl border p-4 transition-all ${
+                  isPaid
+                    ? "border-emerald-500/20 bg-emerald-500/5"
+                    : isFailed
+                      ? "border-red-200 bg-red-50/40"
+                      : "border-slate-200 bg-white shadow-sm"
+                }`}
+              >
+                <div
+                  className={`absolute left-0 right-0 top-0 h-1 ${isPaid ? "bg-emerald-500" : isFailed ? "bg-red-500" : "bg-amber-500"}`}
+                />
+
+                <div className="flex items-start justify-between pt-1">
+                  <div>
+                    <span className="block font-mono text-[10px] font-bold uppercase text-slate-400">
+                      Invoice Parsial
+                    </span>
+                    <span className="text-sm font-bold text-slate-800">{contributor.name}</span>
+                  </div>
+                  <span className="font-mono text-base font-black text-emerald-800">
+                    {formatCurrency(shareAmount)}
+                  </span>
+                </div>
+
+                {isPaid ? (
+                  <div className="mt-4 space-y-1.5 rounded-xl border border-emerald-200/50 bg-emerald-50 p-3">
+                    <span className="flex items-center gap-1 text-[10px] font-bold uppercase text-emerald-800">
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                      Pembayaran Sukses Midtrans
+                    </span>
+                    <div className="space-y-0.5 font-mono text-[10px] text-slate-500">
+                      <div>REF ID: {contributor.transactionId || "-"}</div>
+                      <div>
+                        Waktu:{" "}
+                        {contributor.paidAt
+                          ? new Date(String(contributor.paidAt)).toLocaleTimeString("id-ID")
+                          : "-"}
+                      </div>
+                    </div>
                   </div>
                 ) : (
-                  <div className="p-3.5 bg-emerald-950 text-emerald-200 rounded-xl text-xs flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-emerald-100">
-                      <ShieldCheck className="w-4.5 h-4.5 text-emerald-400" />
-                      <span>
-                        Tagihan terkonfirmasi {currentBill.contributors.length} invoice terpisah.
-                      </span>
+                  <div className="mt-4 space-y-3 border-t border-slate-100 pt-3">
+                    <div className="space-y-1.5">
+                      <label
+                        htmlFor={`channel-${contributor.id}`}
+                        className="block text-[10px] font-bold uppercase tracking-wider text-slate-400"
+                      >
+                        Metode bayar target
+                      </label>
+                      <select
+                        id={`channel-${contributor.id}`}
+                        value={channel}
+                        onChange={(event) => {
+                          const nextChannel = event.target.value as MidtransChannel;
+                          setSelectedChannel((previous) => ({
+                            ...previous,
+                            [contributor.id]: nextChannel,
+                          }));
+                          setPaymentInstructions((previous) => {
+                            const next = { ...previous };
+                            delete next[contributor.id];
+                            return next;
+                          });
+                        }}
+                        className="w-full rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-[11px] font-medium text-slate-700 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      >
+                        {MIDTRANS_CHANNELS.map((item) => (
+                          <option key={item.value} value={item.value}>
+                            {item.label}
+                          </option>
+                        ))}
+                      </select>
                     </div>
-                    {currentBill.status === "COMPLETED" && (
-                      <span className="bg-emerald-500 text-white px-2 py-0.5 rounded font-black text-[9px] uppercase">
-                        LUNAS AMAN
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
 
-              {/* Members Workspace Block */}
-              <div className="bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-5">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 pb-4">
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <Users className="w-4 h-4 text-emerald-600" />
-                      Anggota Tim Patungan ({currentBill.contributors.length} orang)
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Pendamping setuju untuk membagi tagihan kasir secara mandiri
-                    </p>
-                  </div>
+                    {renderMidtransInstruction(contributor.id, channel)}
 
-                  {currentBill.status === "SHARING" && (
-                    <div className="flex flex-wrap gap-1.5 shrink-0">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       <button
                         type="button"
-                        onClick={() => handleAutoBalance("equal")}
-                        className="px-3 py-1.5 bg-slate-50 border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 text-[11px] font-bold text-slate-705 rounded-lg transition-all flex items-center gap-1 cursor-pointer"
-                        title="Bagi rata nominal seluruh anggota"
+                        onClick={() => void handleCreateMidtransPayment(contributor.id)}
+                        disabled={
+                          creatingPayment[contributor.id] ||
+                          shareAmount <= 0 ||
+                          currentBill.status !== "LOCKED"
+                        }
+                        className="flex items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-bold text-white shadow-sm transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
                       >
-                        ⚡ Bagi Rata
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleAutoBalance("remainder")}
-                        disabled={balanceDifference <= 0}
-                        className="px-3 py-1.5 bg-slate-50 border border-slate-200 hover:border-emerald-300 hover:bg-emerald-50 text-[11px] font-bold text-slate-705 rounded-lg transition-all flex items-center gap-1 disabled:opacity-35 cursor-pointer"
-                        title="Taruh sisa kekurangan tagihan pada kas kosong"
-                      >
-                        ⚖️ Bagi Sisa
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {errorText && (
-                  <div className="p-3 bg-red-50 text-red-700 text-xs rounded-lg border border-red-100">
-                    {errorText}
-                  </div>
-                )}
-
-                {successJoinMsg && (
-                  <div className="p-3 bg-emerald-50 text-emerald-800 text-xs rounded-lg border border-emerald-100">
-                    {successJoinMsg}
-                  </div>
-                )}
-
-                {/* Form JOIN as multi-user Simulator inside same webapp */}
-                {currentBill.status === "SHARING" && (
-                  <div className="space-y-3">
-                    {currentUser &&
-                      !currentBill.contributors.some(
-                        (c) =>
-                          c.name.toLowerCase() === currentUser.name.toLowerCase() ||
-                          c.name.toLowerCase() === currentUser.username.toLowerCase(),
-                      ) && (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            setErrorText("");
-                            setSuccessJoinMsg("");
-                            try {
-                              const response = await fetch(`/api/bills/${currentBill.id}/join`, {
-                                method: "POST",
-                                headers: { "Content-Type": "application/json" },
-                                body: JSON.stringify({ name: currentUser.name }),
-                              });
-
-                              if (!response.ok) {
-                                const err = await response.json();
-                                throw new Error(err.error || "Gagal bergabung otomatis.");
-                              }
-
-                              const updated = await response.json();
-                              onSelectBill(updated);
-                              setSuccessJoinMsg(
-                                `Berhasil bergabung otomatis sebagai ${currentUser.name}!`,
-                              );
-                              onRefreshNotifications();
-                              setTimeout(() => setSuccessJoinMsg(""), 4000);
-                            } catch (er: any) {
-                              setErrorText(er.message);
-                            }
-                          }}
-                          className="w-full py-2 bg-emerald-50 hover:bg-emerald-100 border border-dashed border-emerald-300 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 cursor-pointer text-emerald-85 w-full transition-all"
-                        >
-                          ⚡ Gabung Instan Sebagai:{" "}
-                          <span className="underline font-extrabold">{currentUser.name}</span>
-                        </button>
-                      )}
-                    <form
-                      onSubmit={handleJoinBill}
-                      className="flex gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200 shadow-inner"
-                    >
-                      <div className="relative flex-1">
-                        <span className="absolute left-3.5 top-2.5 text-xs text-emerald-600 font-bold">
-                          @
-                        </span>
-                        <input
-                          type="text"
-                          placeholder="Masukkan nama pembeli baru (misal: Cici, Deni)"
-                          value={newMemberName}
-                          onChange={(e) => setNewMemberName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              e.preventDefault();
-                            }
-                          }}
-                          className="w-full pl-8 pr-3 py-1.5 bg-transparent text-xs text-slate-800 focus:outline-hidden"
-                        />
-                      </div>
-                      <button
-                        type="submit"
-                        className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs flex items-center gap-1 cursor-pointer shadow-xs transition-colors"
-                      >
-                        <UserPlus className="w-3.5 h-3.5" />
-                        Gabung
-                      </button>
-                    </form>
-                  </div>
-                )}
-
-                {/* Contributors Editable Input Grid */}
-                <div className="space-y-3">
-                  {currentBill.contributors.length === 0 ? (
-                    <div className="text-center py-8 text-slate-400 text-xs font-light">
-                      Belum ada anggota yang join. Harap ketik nama teman di atas untuk memulai
-                      simulasi penggabungan patungan.
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-slate-100">
-                      {currentBill.contributors.map((c) => (
-                        <div
-                          key={c.id}
-                          className="py-3 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-white hover:bg-slate-50/50 p-2 rounded-xl transition-colors"
-                        >
-                          <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 rounded-full bg-emerald-900/10 text-emerald-800 font-bold text-xs flex items-center justify-center border border-emerald-200">
-                              {c.name.charAt(0).toUpperCase()}
-                            </div>
-                            <div>
-                              <span className="font-semibold text-xs text-slate-800 block">
-                                {c.name}
-                              </span>
-                              <span className="text-[10px] text-slate-400 font-mono block">
-                                ID: {c.id}
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Editable action if in Sharing phase */}
-                          <div className="flex items-center gap-2">
-                            {currentBill.status === "SHARING" ? (
-                              <div className="flex items-center gap-2">
-                                <span className="text-[10px] text-slate-500 font-semibold font-mono">
-                                  Rp
-                                </span>
-                                <input
-                                  type="number"
-                                  value={c.shareAmount || ""}
-                                  onChange={(e) => handleUpdateShare(c.id, Number(e.target.value))}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") {
-                                      e.preventDefault();
-                                    }
-                                  }}
-                                  className="w-24 px-2 py-1 text-xs text-right bg-slate-50 border border-slate-200 focus:bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 focus:outline-hidden rounded font-mono text-slate-800 font-bold"
-                                  placeholder="0"
-                                  min="0"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveMember(c.id)}
-                                  className="text-slate-400 hover:text-red-500 p-1 rounded-sm"
-                                  title="Hapus dari daftar patungan"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            ) : (
-                              // Locked state displays fixed amount
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-xs font-bold font-mono text-slate-800">
-                                  Rp {c.shareAmount.toLocaleString("id-ID")}
-                                </span>
-                                {c.paymentStatus === "PAID" ? (
-                                  <span className="bg-emerald-100 text-emerald-850 border border-emerald-200 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase">
-                                    Lunas
-                                  </span>
-                                ) : (
-                                  <span className="bg-amber-55 text-amber-800 border border-amber-200 text-[9px] font-bold px-1.5 py-0.5 rounded-full uppercase">
-                                    Menunggu
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Individual Invoice Grid / Webhook Trigger Station */}
-              {(currentBill.status === "LOCKED" || currentBill.status === "COMPLETED") && (
-                <div
-                  className="bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-5 animate-fade-in"
-                  id="invoice-payment-sandbox"
-                >
-                  <div>
-                    <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <CreditCard className="w-4 h-4 text-emerald-600" />
-                      Invoice Parsial Terbit (Siap Bayar Simulasian Bank Webhook)
-                    </h3>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      Setiap anggota mendapat porsi tagihan terpisah. Gunakan tombol sandbox di
-                      bawah untuk menirukan transfer e-wallet/bank demi memverifikasi auto integrasi
-                      webhook kami.
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {currentBill.contributors.map((c) => (
-                      <div
-                        key={c.id}
-                        className={`p-4 border rounded-2xl transition-all relative overflow-hidden ${
-                          c.paymentStatus === "PAID"
-                            ? "bg-emerald-500/5 border-emerald-500/20"
-                            : "bg-white border-slate-200 shadow-sm"
-                        }`}
-                      >
-                        {/* Status bar graphic */}
-                        <div
-                          className={`absolute top-0 left-0 right-0 h-1 ${c.paymentStatus === "PAID" ? "bg-emerald-500" : "bg-amber-500"}`}
-                        />
-
-                        <div className="flex justify-between items-start pt-1">
-                          <div>
-                            <span className="text-[10px] font-bold text-slate-400 block uppercase font-mono">
-                              INVOICE PARSIAL
-                            </span>
-                            <span className="font-bold text-slate-800 text-sm">{c.name}</span>
-                          </div>
-                          <span className="text-base font-black font-mono text-emerald-800">
-                            Rp {c.shareAmount.toLocaleString("id-ID")}
-                          </span>
-                        </div>
-
-                        {c.paymentStatus === "PAID" ? (
-                          <div className="mt-4 bg-emerald-50 border border-emerald-200/50 rounded-xl p-3 space-y-1.5">
-                            <span className="text-[10px] text-emerald-800 font-bold block flex items-center gap-1 uppercase">
-                              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                              Pembayaran Sukses Webhook
-                            </span>
-                            <div className="text-[10px] text-slate-500 font-mono space-y-0.5">
-                              <div>REF ID: {c.transactionId}</div>
-                              <div>
-                                Waktu: {c.paidAt ? new Date(c.paidAt).toLocaleTimeString() : "-"}
-                              </div>
-                            </div>
-                          </div>
+                        {creatingPayment[contributor.id] ? (
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
                         ) : (
-                          // Sandbox controller inside the actual invoice!
-                          <div className="mt-4 pt-3 border-t border-slate-100 space-y-3">
-                            <div className="flex gap-2 items-center">
-                              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block shrink-0">
-                                Metode Bayar:
-                              </label>
-                              <select
-                                value={selectedGateway[c.id] || "QRIS BCA"}
-                                onChange={(e) =>
-                                  setSelectedGateway((prev) => ({
-                                    ...prev,
-                                    [c.id]: e.target.value,
-                                  }))
-                                }
-                                className="flex-1 text-[11px] bg-slate-50 border border-slate-250 rounded-lg px-2 py-1.5 text-slate-700 font-medium focus:outline-hidden focus:ring-1 focus:ring-emerald-550 focus:bg-white"
-                              >
-                                <option value="QRIS BCA">QRIS Instan BCA</option>
-                                <option value="Virtual Account Mandiri">
-                                  VA Bank Mandiri (SplitBay Integration)
-                                </option>
-                                <option value="GoPay">GoPay (Gojek Sandbox)</option>
-                                <option value="ShopeePay">ShopeePay</option>
-                                <option value="OVO Wallet">OVO Dompet Kilat</option>
-                              </select>
-                            </div>
-
-                            {/* Live Generated Payment Gateway Credentials Box */}
-                            {(() => {
-                              const chosenGateway = selectedGateway[c.id] || "QRIS BCA";
-                              const isVA =
-                                chosenGateway.toLowerCase().includes("mandiri") ||
-                                chosenGateway.toLowerCase().includes("virtual") ||
-                                chosenGateway.toLowerCase().includes("va");
-
-                              return (
-                                <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-3 space-y-2 text-left">
-                                  {isVA ? (
-                                    // Virtual Account Style
-                                    <div className="space-y-2">
-                                      <div className="flex justify-between items-center text-[9px] text-slate-400 font-bold uppercase tracking-wider">
-                                        <span>Virtual Account Gateway</span>
-                                        <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 px-1 py-0.2 rounded text-[8px] tracking-normal font-sans">
-                                          PENDING TRANSFER
-                                        </span>
-                                      </div>
-
-                                      <div className="bg-white border border-slate-200 p-2.5 rounded-lg flex items-center justify-between shadow-2xs">
-                                        <div>
-                                          <span className="text-[9px] text-slate-400 font-bold block uppercase leading-none mb-1">
-                                            {chosenGateway.toLowerCase().includes("mandiri")
-                                              ? "BANK MANDIRI VA"
-                                              : "VIRTUAL ACCOUNT"}
-                                          </span>
-                                          <span className="font-mono text-xs font-extrabold text-slate-800 tracking-wider">
-                                            {getVAForContributor(c.name, c.id, chosenGateway)}
-                                          </span>
-                                        </div>
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            handleCopyText(
-                                              c.id,
-                                              getVAForContributor(
-                                                c.name,
-                                                c.id,
-                                                chosenGateway,
-                                              ).replace(/\s/g, ""),
-                                            )
-                                          }
-                                          className="p-1 px-2 bg-slate-100 hover:bg-emerald-50 text-slate-600 hover:text-emerald-700 rounded text-[9px] font-bold transition-all border border-slate-200 flex items-center gap-1 cursor-pointer"
-                                        >
-                                          {copiedStates[c.id] ? (
-                                            <>
-                                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                                              Copied!
-                                            </>
-                                          ) : (
-                                            <>
-                                              <Copy className="w-3 h-3" />
-                                              Copy
-                                            </>
-                                          )}
-                                        </button>
-                                      </div>
-
-                                      <p className="text-[9.5px] text-slate-500 leading-normal font-sans">
-                                        Transfer tepat{" "}
-                                        <strong className="text-slate-800 font-extrabold font-mono">
-                                          Rp {c.shareAmount.toLocaleString("id-ID")}
-                                        </strong>{" "}
-                                        ke nomor VA di atas. Gateway kami akan memvalidasi lunas
-                                        dalam milidetik.
-                                      </p>
-                                    </div>
-                                  ) : (
-                                    // QRIS / Barcode Dynamic Display Style
-                                    <div className="space-y-2">
-                                      <div className="flex justify-between items-center text-[9px] text-slate-400 font-bold uppercase tracking-wider">
-                                        <span>Dynamic QRIS / Barcode</span>
-                                        <div className="flex gap-1 bg-slate-200/80 p-0.5 rounded border border-slate-300">
-                                          <button
-                                            type="button"
-                                            onClick={() =>
-                                              setPaymentModes((prev) => ({
-                                                ...prev,
-                                                [c.id]: "qris",
-                                              }))
-                                            }
-                                            className={`px-1 rounded text-[8px] font-black uppercase tracking-wider cursor-pointer ${
-                                              (paymentModes[c.id] || "qris") === "qris"
-                                                ? "bg-white text-emerald-800 shadow-2xs"
-                                                : "text-slate-500 hover:text-slate-700"
-                                            }`}
-                                          >
-                                            QRIS
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() =>
-                                              setPaymentModes((prev) => ({
-                                                ...prev,
-                                                [c.id]: "barcode",
-                                              }))
-                                            }
-                                            className={`px-1 rounded text-[8px] font-black uppercase tracking-wider cursor-pointer ${
-                                              paymentModes[c.id] === "barcode"
-                                                ? "bg-white text-emerald-800 shadow-2xs"
-                                                : "text-slate-500 hover:text-slate-700"
-                                            }`}
-                                          >
-                                            Barcode
-                                          </button>
-                                        </div>
-                                      </div>
-
-                                      {(paymentModes[c.id] || "qris") === "qris" ? (
-                                        <div className="bg-white border border-slate-200 rounded-lg p-2.5 text-center space-y-1.5 shadow-2xs flex flex-col items-center">
-                                          <div className="w-full flex justify-between items-center border-b border-rose-100 pb-1 px-0.5">
-                                            <span className="text-[10px] font-black tracking-tighter text-rose-600 font-mono italic">
-                                              QRIS GPN
-                                            </span>
-                                            <span className="text-[8px] font-bold text-teal-600 tracking-tight">
-                                              DYNAMICAL BILL
-                                            </span>
-                                          </div>
-
-                                          <div className="relative group cursor-zoom-in">
-                                            <svg
-                                              width="100"
-                                              height="100"
-                                              viewBox="0 0 100 100"
-                                              className="mx-auto border border-slate-200/80 p-1 bg-white rounded-md transition-transform duration-200 group-hover:scale-105"
-                                            >
-                                              {/* Outer Finder Patterns (Top-Left) */}
-                                              <rect
-                                                x="5"
-                                                y="5"
-                                                width="22"
-                                                height="22"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="9"
-                                                y="9"
-                                                width="14"
-                                                height="14"
-                                                fill="#ffffff"
-                                              />
-                                              <rect
-                                                x="12"
-                                                y="12"
-                                                width="8"
-                                                height="8"
-                                                fill="#0f172a"
-                                              />
-
-                                              {/* Outer Finder Patterns (Top-Right) */}
-                                              <rect
-                                                x="73"
-                                                y="5"
-                                                width="22"
-                                                height="22"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="77"
-                                                y="9"
-                                                width="14"
-                                                height="14"
-                                                fill="#ffffff"
-                                              />
-                                              <rect
-                                                x="80"
-                                                y="12"
-                                                width="8"
-                                                height="8"
-                                                fill="#0f172a"
-                                              />
-
-                                              {/* Outer Finder Patterns (Bottom-Left) */}
-                                              <rect
-                                                x="5"
-                                                y="73"
-                                                width="22"
-                                                height="22"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="9"
-                                                y="77"
-                                                width="14"
-                                                height="14"
-                                                fill="#ffffff"
-                                              />
-                                              <rect
-                                                x="12"
-                                                y="80"
-                                                width="8"
-                                                height="8"
-                                                fill="#0f172a"
-                                              />
-
-                                              {/* Alignment Pattern (Bottom-Right) */}
-                                              <rect
-                                                x="75"
-                                                y="75"
-                                                width="10"
-                                                height="10"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="78"
-                                                y="78"
-                                                width="4"
-                                                height="4"
-                                                fill="#ffffff"
-                                              />
-                                              <rect
-                                                x="79"
-                                                y="79"
-                                                width="2"
-                                                height="2"
-                                                fill="#0f172a"
-                                              />
-
-                                              {/* Random Grid representing dynamic invoice hash */}
-                                              <rect
-                                                x="35"
-                                                y="8"
-                                                width="4"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="42"
-                                                y="5"
-                                                width="8"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="48"
-                                                y="14"
-                                                width="4"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="55"
-                                                y="10"
-                                                width="4"
-                                                height="8"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="45"
-                                                y="22"
-                                                width="10"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="32"
-                                                y="15"
-                                                width="8"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-
-                                              <rect
-                                                x="8"
-                                                y="32"
-                                                width="8"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="5"
-                                                y="42"
-                                                width="4"
-                                                height="8"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="15"
-                                                y="48"
-                                                width="8"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="22"
-                                                y="38"
-                                                width="4"
-                                                height="6"
-                                                fill="#0f172a"
-                                              />
-
-                                              <rect
-                                                x="32"
-                                                y="32"
-                                                width="12"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="35"
-                                                y="40"
-                                                width="4"
-                                                height="10"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="44"
-                                                y="48"
-                                                width="10"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-
-                                              <rect
-                                                x="80"
-                                                y="32"
-                                                width="12"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="84"
-                                                y="42"
-                                                width="4"
-                                                height="6"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="75"
-                                                y="50"
-                                                width="8"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-
-                                              {/* Dynamic bits */}
-                                              <rect
-                                                x="32"
-                                                y="60"
-                                                width="4"
-                                                height="8"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="42"
-                                                y="65"
-                                                width="12"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="60"
-                                                y="60"
-                                                width="8"
-                                                height="8"
-                                                fill="#0f172a"
-                                              />
-
-                                              <rect
-                                                x="8"
-                                                y="60"
-                                                width="8"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="18"
-                                                y="65"
-                                                width="4"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-
-                                              <rect
-                                                x="75"
-                                                y="62"
-                                                width="12"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="52"
-                                                y="78"
-                                                width="12"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-                                              <rect
-                                                x="35"
-                                                y="82"
-                                                width="8"
-                                                height="4"
-                                                fill="#0f172a"
-                                              />
-
-                                              {/* Center Badge Mockup */}
-                                              <rect
-                                                x="38"
-                                                y="38"
-                                                width="24"
-                                                height="24"
-                                                rx="4"
-                                                fill="#ffffff"
-                                                stroke="#cbd5e1"
-                                                strokeWidth="1"
-                                              />
-                                              <rect
-                                                x="41"
-                                                y="41"
-                                                width="18"
-                                                height="18"
-                                                rx="2"
-                                                fill="#bf1e2e"
-                                              />
-                                              <text
-                                                x="50"
-                                                y="52"
-                                                fill="#ffffff"
-                                                fontSize="8"
-                                                fontWeight="black"
-                                                textAnchor="middle"
-                                                fontFamily="sans-serif"
-                                              >
-                                                Q
-                                              </text>
-                                            </svg>
-                                          </div>
-
-                                          <div className="space-y-0.5 font-sans">
-                                            <span className="text-[8px] text-slate-400 block font-mono">
-                                              NMID: ID202652250005 (BCA-SplitBay)
-                                            </span>
-                                            <span className="text-xs font-bold font-mono text-emerald-800">
-                                              Rp {c.shareAmount.toLocaleString("id-ID")}
-                                            </span>
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <div className="bg-white border border-slate-200 rounded-lg p-2.5 text-center space-y-2 shadow-2xs flex flex-col items-center">
-                                          <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block leading-none">
-                                            Scan Barcode Kasir Merchant
-                                          </span>
-
-                                          <div className="py-2.5 px-3 bg-white border border-slate-100 rounded-md flex flex-col items-center w-full">
-                                            <svg width="140" height="42" className="mx-auto block">
-                                              <g fill="#0f172a">
-                                                <rect x="3" y="1" width="3" height="28" />
-                                                <rect x="8" y="1" width="1" height="28" />
-                                                <rect x="11" y="1" width="4" height="28" />
-                                                <rect x="17" y="1" width="2" height="28" />
-                                                <rect x="22" y="1" width="1" height="28" />
-                                                <rect x="25" y="1" width="3" height="28" />
-                                                <rect x="29" y="1" width="1" height="28" />
-                                                <rect x="33" y="1" width="4" height="28" />
-                                                <rect x="40" y="1" width="2" height="28" />
-                                                <rect x="44" y="1" width="1" height="28" />
-                                                <rect x="47" y="1" width="3" height="28" />
-                                                <rect x="53" y="1" width="2" height="28" />
-                                                <rect x="57" y="1" width="4" height="28" />
-                                                <rect x="62" y="1" width="1" height="28" />
-                                                <rect x="65" y="1" width="3" height="28" />
-                                                <rect x="69" y="1" width="1" height="28" />
-                                                <rect x="73" y="1" width="2" height="28" />
-                                                <rect x="77" y="1" width="4" height="28" />
-                                                <rect x="84" y="1" width="1" height="28" />
-                                                <rect x="87" y="1" width="3" height="28" />
-                                                <rect x="91" y="1" width="2" height="28" />
-                                                <rect x="95" y="1" width="4" height="28" />
-                                                <rect x="101" y="1" width="1" height="28" />
-                                                <rect x="104" y="1" width="3" height="28" />
-                                                <rect x="108" y="1" width="2" height="28" />
-                                                <rect x="112" y="1" width="1" height="28" />
-                                                <rect x="115" y="1" width="4" height="28" />
-                                                <rect x="121" y="1" width="2" height="28" />
-                                                <rect x="125" y="1" width="2" height="28" />
-                                              </g>
-                                              <text
-                                                x="70"
-                                                y="38"
-                                                fill="#64748b"
-                                                fontSize="7"
-                                                letterSpacing="1.5"
-                                                textAnchor="middle"
-                                                fontFamily="monospace"
-                                                fontWeight="semibold"
-                                              >
-                                                {getBarcodeForContributor(c.id, c.shareAmount)}
-                                              </text>
-                                            </svg>
-                                          </div>
-
-                                          <p className="text-[8.5px] text-slate-500 font-sans leading-relaxed">
-                                            Tunjukkan barcode ini ke kasir merchant terafiliasi
-                                            SplitBay saat checkout untuk validasi.
-                                          </p>
-                                        </div>
-                                      )}
-
-                                      <p className="text-[8.5px] text-slate-400 leading-normal font-sans">
-                                        Scan dengan m-Banking (BCA, Mandiri, BRI) atau e-Wallet
-                                        favorit Anda.
-                                      </p>
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })()}
-
-                            <button
-                              onClick={() =>
-                                handleTriggerWebhookPayment(c.id, c.name, c.shareAmount)
-                              }
-                              disabled={simulatings[c.id]}
-                              className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center justify-center gap-2"
-                            >
-                              {simulatings[c.id] ? (
-                                <>
-                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                  Memproses Webhook VA...
-                                </>
-                              ) : (
-                                <>
-                                  <Send className="w-3.5 h-3.5" />
-                                  Kirim Simulasi Webhook Lunas
-                                </>
-                              )}
-                            </button>
-                          </div>
+                          <CreditCard className="h-3.5 w-3.5" />
                         )}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* Right Grid Column: Webhook Log Console and Itemized Bill Drawer */}
-            <div className="space-y-6">
-              {/* Receipt Details Box */}
-              <div className="bg-white border border-slate-200 shadow-sm rounded-2xl p-6 space-y-4">
-                <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-                  <ShoppingCart className="w-4 h-4 text-emerald-600" />
-                  Rincian Bill dari Kasir
-                </h3>
-
-                <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
-                  {currentBill.items && currentBill.items.length > 0 ? (
-                    currentBill.items.map((itm) => (
-                      <div
-                        key={itm.id}
-                        className="flex justify-between items-start text-xs text-slate-600 border-b border-slate-100 pb-2"
+                        {instruction ? "Buat Ulang" : "Buat Transaksi"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleCheckMidtransStatus(contributor.id)}
+                        disabled={checkingPayment[contributor.id] || !currentOrderId}
+                        className="flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700 transition-colors hover:border-emerald-300 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <div>
-                          <span className="font-semibold text-slate-800">{item.name}</span>
-                          <span className="text-[10px] text-slate-400 block font-mono mt-0.5">
-                            {item.quantity} pcs × Rp {item.price.toLocaleString("id-ID")}
-                          </span>
-                        </div>
-                        <span className="font-mono text-slate-800 font-medium shrink-0">
-                          Rp {(item.price * item.quantity).toLocaleString("id-ID")}
-                        </span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="text-slate-400 text-center text-[11px] py-4">
-                      Total tagihan diatur gelondongan (tanpa detail menu)
+                        {checkingPayment[contributor.id] ? (
+                          <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        Cek Status
+                      </button>
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
-                <div className="border-t border-slate-100 pt-3 flex justify-between items-center text-xs">
-                  <span className="font-bold text-slate-700 uppercase">Subtotal Tagihan</span>
-                  <span className="font-bold font-mono text-emerald-800 text-sm">
-                    Rp {currentBill.totalAmount.toLocaleString("id-ID")}
+  const renderReceiptCard = () => {
+    if (!currentBill) return null;
+
+    return (
+      <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-slate-700">
+          <ShoppingCart className="h-4 w-4 text-emerald-600" />
+          Rincian Bill dari Kasir
+        </h3>
+
+        <div className="max-h-52 space-y-2 overflow-y-auto pr-1">
+          {currentBill.items && currentBill.items.length > 0 ? (
+            currentBill.items.map((item) => (
+              <div
+                key={item.id}
+                className="flex items-start justify-between border-b border-slate-100 pb-2 text-xs text-slate-600"
+              >
+                <div>
+                  <span className="font-semibold text-slate-800">{item.name}</span>
+                  <span className="mt-0.5 block font-mono text-[10px] text-slate-400">
+                    {item.quantity} pcs × {formatCurrency(item.price)}
                   </span>
                 </div>
+                <span className="shrink-0 font-mono font-medium text-slate-800">
+                  {formatCurrency(item.price * item.quantity)}
+                </span>
               </div>
+            ))
+          ) : (
+            <div className="py-4 text-center text-[11px] text-slate-400">
+              Total tagihan diatur tanpa detail menu.
+            </div>
+          )}
+        </div>
 
-              {/* Webhook Sandbox Log Output */}
-              <div className="bg-gray-950 text-emerald-400 font-mono text-[10px] rounded-2xl p-5 border border-gray-900 shadow-lg space-y-3">
-                <div className="flex justify-between items-center border-b border-emerald-900/40 pb-2">
-                  <span className="font-bold tracking-wider text-emerald-300 block uppercase">
-                    Sandbox Console Webhook
-                  </span>
-                  <span
-                    className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"
-                    title="Webhook is online"
-                  />
-                </div>
+        <div className="flex items-center justify-between border-t border-slate-100 pt-3 text-xs">
+          <span className="font-bold uppercase text-slate-700">Subtotal Tagihan</span>
+          <span className="font-mono text-sm font-bold text-emerald-800">
+            {formatCurrency(currentBill.totalAmount)}
+          </span>
+        </div>
+      </div>
+    );
+  };
 
-                <p className="text-emerald-500 text-[9px] leading-relaxed">
-                  Terminal ini mencatat lalu lintas payload JSON sandbox yang ditembakkan secara
-                  asynchronous langsung ke endpoint backend{" "}
-                  <code className="bg-emerald-950/80 px-1 border border-emerald-900 text-emerald-300">
-                    /api/webhook/payment
-                  </code>
-                  .
-                </p>
+  const renderPaymentConsole = () => (
+    <div className="space-y-3 rounded-2xl border border-slate-900 bg-gray-950 p-5 font-mono text-[10px] text-emerald-400 shadow-lg">
+      <div className="flex items-center justify-between border-b border-emerald-900/40 pb-2">
+        <span className="block font-bold uppercase tracking-wider text-emerald-300">
+          Midtrans Payment Console
+        </span>
+        <span className="h-2 w-2 rounded-full bg-emerald-500" title="Payment console online" />
+      </div>
+      <p className="text-[9px] leading-relaxed text-emerald-500">
+        Console ini mencatat pembuatan credential Core API dan pengecekan status. Pelunasan asli
+        diproses oleh endpoint{" "}
+        <code className="border border-emerald-900 bg-emerald-950/80 px-1 text-emerald-300">
+          /api/webhook/midtrans
+        </code>{" "}
+        atau{" "}
+        <code className="border border-emerald-900 bg-emerald-950/80 px-1 text-emerald-300">
+          /api/payments/midtrans/status
+        </code>
+        .
+      </p>
+      <div className="h-44 space-y-1.5 overflow-y-auto rounded-lg border border-emerald-950 bg-black/45 p-2">
+        {paymentLogs.length === 0 ? (
+          <span className="block py-8 text-center text-[9px] text-emerald-600/60">
+            Belum ada credential Midtrans dibuat. Gunakan tombol Buat Transaksi pada invoice
+            parsial.
+          </span>
+        ) : (
+          paymentLogs.map((log, index) => (
+            <div
+              key={`${log}-${index}`}
+              className="border-b border-emerald-950 pb-1 leading-normal"
+            >
+              {log}
+            </div>
+          ))
+        )}
+      </div>
+      <div className="flex items-center justify-center gap-1 text-center text-[9px] text-emerald-600">
+        <span>🔒 Webhook signature dan idempotency wajib divalidasi di backend</span>
+      </div>
+    </div>
+  );
 
-                <div className="h-44 overflow-y-auto space-y-1.5 bg-black/45 p-2 rounded-lg scrollbar-thin scrollbar-thumb-emerald-900 border border-emerald-950">
-                  {webhookLogs.length === 0 ? (
-                    <span className="text-emerald-600/60 text-[9px] block text-center py-8">
-                      Belum ada aktivitas webhook terkirim. Gunakan tombol &quot;Kirim Webhook
-                      Lunas&quot; di rincian Invoice.
-                    </span>
-                  ) : (
-                    webhookLogs.map((logStr, lIdx) => (
-                      <div key={lIdx} className="border-b border-emerald-950 pb-1 leading-normal">
-                        {logStr}
-                      </div>
-                    ))
-                  )}
-                </div>
+  if (!currentBill) {
+    return (
+      <div className="space-y-6" id="workspace-root-panel">
+        {renderSearchPortal()}
+      </div>
+    );
+  }
 
-                <div className="text-[9px] text-emerald-600 text-center flex items-center justify-center gap-1">
-                  <span>🔒 Secure HMAC Token Verified</span>
-                </div>
+  return (
+    <div className="space-y-6" id="workspace-root-panel">
+      <div className="animate-fade-in space-y-6" id="active-group-workspace">
+        <div className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:flex-row md:items-center">
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                onSelectBill(null);
+                setErrorText("");
+                setSuccessJoinMsg("");
+              }}
+              className="rounded-xl border border-slate-200 p-2 transition-all hover:bg-slate-50"
+              title="Kembali ke gerbang join"
+            >
+              <ArrowLeft className="h-4 w-4 text-slate-600" />
+            </button>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-md border border-emerald-100 bg-emerald-50 px-2.5 py-1 font-mono text-xs font-bold uppercase text-emerald-800 shadow-sm">
+                  Kode: {currentBill.code}
+                </span>
+                <StatusBadge status={currentBill.status} />
               </div>
+              <h2 className="mt-1 text-xl font-black text-slate-900">{currentBill.title}</h2>
+              <p className="mt-0.5 text-xs text-slate-500">{currentBill.description}</p>
             </div>
           </div>
+
+          <div className="shrink-0 text-left md:text-right">
+            <span className="block text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              Total Tagihan Kasir
+            </span>
+            <span className="font-mono text-2xl font-black text-emerald-800">
+              {formatCurrency(currentBill.totalAmount)}
+            </span>
+          </div>
         </div>
-      )}
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <div className="space-y-6 lg:col-span-2">
+            {renderBalanceMeter()}
+            {renderMembersCard()}
+            {renderInvoiceCard()}
+          </div>
+          <div className="space-y-6">
+            {renderReceiptCard()}
+            {renderPaymentConsole()}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
